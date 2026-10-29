@@ -408,8 +408,8 @@ case "$shard" in
     elif ! boot_simulator "$IPAD_UDID" TestReceipts/settings-device-stack-boot.log; then
       failed=1
     elif ! {
-        xcrun simctl uninstall "$IPAD_UDID" com.jerryfane.herdr 2>/dev/null || true
-        xcrun simctl uninstall "$IPAD_UDID" com.jerryfane.herdr.uitests.xctrunner 2>/dev/null || true
+        xcrun simctl uninstall "$IPAD_UDID" inc.simcast.herdrup 2>/dev/null || true
+        xcrun simctl uninstall "$IPAD_UDID" inc.simcast.herdrup.uitests.xctrunner 2>/dev/null || true
         install_app_under_test "$IPAD_UDID" TestReceipts/settings-device-stack-install.log \
           "$SETTINGS_APP_UNDER_TEST"
       }; then

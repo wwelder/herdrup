@@ -9,11 +9,11 @@
 #   simulator   iPhone 17 Pro
 #   SDK         iPhoneSimulator26.2
 #   target      arm64-apple-ios17.0-simulator
-#   bundle ids  com.jerryfane.<name>
+#   bundle ids  inc.simcast.<name>
 name: Herdr
 
 options:
-  bundleIdPrefix: com.jerryfane
+  bundleIdPrefix: inc.simcast
   deploymentTarget:
     iOS: "17.0"
   createIntermediateGroups: true
@@ -171,7 +171,7 @@ targets:
         CFBundleDisplayName: herdrup
         CFBundleName: herdrup
         CFBundleURLTypes:
-          - CFBundleURLName: com.jerryfane.herdr
+          - CFBundleURLName: inc.simcast.herdrup
             CFBundleURLSchemes:
               - herdrup
         # Names the asset-catalog icon set for the runtime. actool also injects
@@ -240,7 +240,7 @@ targets:
         # implement). Declaring it unused is an App Store review flag, so it is deliberately omitted.
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.jerryfane.herdr
+        PRODUCT_BUNDLE_IDENTIFIER: inc.simcast.herdrup
         MARKETING_VERSION: "1.2.1"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.9"
@@ -265,13 +265,13 @@ targets:
         # the mark survives to 48px, so iOS downscales it for every slot.
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # Distribution signing for the TestFlight/App Store archive lane. Team
-        # FXQ5Z9HHY6 (Jerry Fanelli), automatic signing — the Mac archive runs with
+        # A2Z7279M5Q (Simcast, Inc.), automatic signing — the Mac archive runs with
         # `-allowProvisioningUpdates` using the Mac's signed-in Xcode account, which
         # creates/renews the Apple Distribution cert + App Store profile on demand.
         # These are INERT for the buildbox's iphonesimulator build (the simulator
         # is never code-signed), so the existing green sim build is unaffected;
         # they take effect only for a device archive. See scripts/testflight.sh.
-        DEVELOPMENT_TEAM: FXQ5Z9HHY6
+        DEVELOPMENT_TEAM: A2Z7279M5Q
         CODE_SIGN_STYLE: Automatic
       # The Distribution config (GitHub Actions CI archive) signs MANUALLY, scoped to
       # THIS app target. It must NOT be passed on the xcodebuild command line: that
@@ -311,7 +311,7 @@ targets:
       - target: Herdr
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.jerryfane.herdr.fonttests
+        PRODUCT_BUNDLE_IDENTIFIER: inc.simcast.herdrup.fonttests
         SWIFT_VERSION: "5.9"
         GENERATE_INFOPLIST_FILE: YES
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -329,7 +329,7 @@ targets:
       - target: Herdr
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.jerryfane.herdr.uitests
+        PRODUCT_BUNDLE_IDENTIFIER: inc.simcast.herdrup.uitests
         SWIFT_VERSION: "5.9"
         GENERATE_INFOPLIST_FILE: YES
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -341,7 +341,7 @@ targets:
   # own copy of the status colours because DesignSystem is app-target only. The buildbox
   # sim build is never signed (CODE_SIGNING_ALLOWED=NO on the command line), so the widget
   # compiles+embeds there with no profile; the Distribution ARCHIVE needs the widget's own
-  # App Store profile ("Herdrup Widgets App Store"), minted for com.jerryfane.herdr.widgets
+  # App Store profile ("Herdrup Widgets App Store"), minted for inc.simcast.herdrup.widgets
   # — see testflight.yml (Option B: created in CI via the ASC API, or minted once).
   HerdrWidgets:
     type: app-extension
@@ -387,7 +387,7 @@ targets:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.jerryfane.herdr.widgets
+        PRODUCT_BUNDLE_IDENTIFIER: inc.simcast.herdrup.widgets
         MARKETING_VERSION: "1.2.1"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.9"
@@ -396,7 +396,7 @@ targets:
         # Team + automatic signing for the base (Mac lane / local). INERT for the sim
         # build (never signed). The Distribution config overrides to manual with the
         # widget's own App Store profile, mirroring the app target.
-        DEVELOPMENT_TEAM: FXQ5Z9HHY6
+        DEVELOPMENT_TEAM: A2Z7279M5Q
         CODE_SIGN_STYLE: Automatic
       configs:
         Distribution:
@@ -410,7 +410,7 @@ targets:
   # HerdrKit: the app does the answering. Signing mirrors HerdrWidgets: unsigned in the
   # simulator builds, automatic for the Mac lane, and for the Distribution archive its own
   # App Store profile ("Herdrup Notification Service App Store", bundle id
-  # com.jerryfane.herdr.notificationservice), created in CI like the widget's (testflight.yml).
+  # inc.simcast.herdrup.notificationservice), created in CI like the widget's (testflight.yml).
   HerdrNotificationService:
     type: app-extension
     platform: iOS
@@ -430,14 +430,14 @@ targets:
           NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).NotificationService"
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.jerryfane.herdr.notificationservice
+        PRODUCT_BUNDLE_IDENTIFIER: inc.simcast.herdrup.notificationservice
         # Bump with the app's and the widget's: an extension's version must match its app's.
         MARKETING_VERSION: "1.2.1"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.9"
         GENERATE_INFOPLIST_FILE: NO
         TARGETED_DEVICE_FAMILY: "1,2"
-        DEVELOPMENT_TEAM: FXQ5Z9HHY6
+        DEVELOPMENT_TEAM: A2Z7279M5Q
         CODE_SIGN_STYLE: Automatic
       configs:
         Distribution:
@@ -475,13 +475,13 @@ targets:
               NSExtensionActivationSupportsFileWithMaxCount: 100
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.jerryfane.herdr.share
+        PRODUCT_BUNDLE_IDENTIFIER: inc.simcast.herdrup.share
         MARKETING_VERSION: "1.2.1"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.9"
         GENERATE_INFOPLIST_FILE: NO
         TARGETED_DEVICE_FAMILY: "1,2"
-        DEVELOPMENT_TEAM: FXQ5Z9HHY6
+        DEVELOPMENT_TEAM: A2Z7279M5Q
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_ENTITLEMENTS: HerdrShareExtension/HerdrShare.entitlements
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) HERDR_SHARE_EXTENSION"
