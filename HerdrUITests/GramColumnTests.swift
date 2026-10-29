@@ -8,7 +8,10 @@ import XCTest
 /// The `list` mock clears the stored width at launch unless `HERDR_MOCK_COLUMN_WIDTH=keep`,
 /// so each test starts at the default (Wide).
 final class GramColumnTests: XCTestCase {
-    override func setUp() { continueAfterFailure = false }
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+        throw XCTSkip("the owner's Gram tab is hidden for now (HomeTab.allCases)")
+    }
 
     private func launchGram(environment: [String: String] = [:]) -> XCUIApplication {
         let app = XCUIApplication.launched(mock: "list", environment: environment)

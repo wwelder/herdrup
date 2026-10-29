@@ -118,6 +118,10 @@ public actor CitadelTransport: HerdrTransport, MachineFederationTransport, Sessi
         return CitadelTransport(credentials: scoped, sharing: self)
     }
 
+    public nonisolated func sessionTransport(_ session: String?) -> any HerdrTransport {
+        forSession(session)
+    }
+
     /// The herdr session this transport addresses; nil is the default session.
     public nonisolated var session: String? { credentials.session }
 

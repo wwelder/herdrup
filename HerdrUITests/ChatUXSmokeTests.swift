@@ -1016,6 +1016,7 @@ final class ChatUXSmokeTests: XCTestCase {
     /// Chat and Gram share one column width (#541): a width chosen in Chat is the width Gram
     /// shows, and a reset in Gram is Chat's too.
     func testChatAndGramShareTheColumnWidth() throws {
+        try XCTSkipIf(true, "the owner's Gram tab is hidden for now (HomeTab.allCases)")
         try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .pad, "the column width is resizable on regular width only")
         XCUIDevice.shared.orientation = .landscapeLeft
         rotated = true

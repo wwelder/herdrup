@@ -12,7 +12,10 @@ import XCTest
 /// (two agents share the name clientloop); g7–g9 yesterday's vetrina thread. g2–g4 are unread.
 final class GramTests: XCTestCase {
 
-    override func setUp() { continueAfterFailure = false }
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+        throw XCTSkip("the owner's Gram tab is hidden for now (HomeTab.allCases)")
+    }
 
     /// iPad and Mac draw Gram in the split view: the sidebar holds search, the conversations
     /// and Read all. iPhone keeps them on the page (search button, the "Gram ›" pill's sheet).

@@ -113,6 +113,13 @@ public actor HerdrClient {
         return try await sessionTransport.listSessions()
     }
 
+    /// A client for another herdr session on this machine (nil = default), sharing this
+    /// one's SSH connection. nil when the transport can't address other sessions.
+    public nonisolated func forSession(_ session: String?) -> HerdrClient? {
+        guard let sessions = transport as? any SessionListingTransport else { return nil }
+        return HerdrClient(transport: sessions.sessionTransport(session))
+    }
+
     /// `agent.list` from another herdr session on the same machine (#347), for the
     /// session pills' needs-you counts. Throws when the transport can't reach other sessions.
     public func agentList(inSession session: String?) async throws -> [AgentInfo] {

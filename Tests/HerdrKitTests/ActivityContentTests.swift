@@ -530,13 +530,13 @@ final class ActivityContentTests: XCTestCase {
 
     /// R2 (P3). `headline: lead?.title` mutated to `lead?.info.name` survived, because no fixture
     /// had a NAMELESS lead — so `displayName`'s fallback chain (name ?? terminalTitleStripped ??
-    /// paneID) was unpinned at the headline call site. On the wire `name` is optional, so under the
+    /// agent ?? "agent") was unpinned at the headline call site. On the wire `name` is optional, so under the
     /// mutant a real roster of unnamed panes headlines "No agents".
     func testTheHeadlineFallsBackWhenTheLeadHasNoName() throws {
         let l = AgentList(agents: [try agent(pane: "w1:p9", status: "blocked")], livePaneIDs: ["w1:p9"])
         XCTAssertNil(l.activityLead?.info.name, "premise: the lead genuinely has no name")
-        XCTAssertEqual(l.activityContent.headline, "w1:p9",
-                       "with no name and no terminal title, displayName falls back to the paneID — never to the empty-roster constant")
+        XCTAssertEqual(l.activityContent.headline, "agent",
+                       "with no name, terminal title or agent kind, displayName falls back to \"agent\" — never to herdr's pane id, nor to the empty-roster constant")
         XCTAssertNotEqual(l.activityContent.headline, "No agents")
     }
 

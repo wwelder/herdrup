@@ -55,16 +55,6 @@ final class AgentListChromeTests: XCTestCase {
         // a 44 pt capsule flush against the panel's top edge.
         assertLinesUpWithWindowControls(newAgent, in: window, "Agents")
         XCTAssertTrue(back.isHittable)
-        // Gram's header is built from the same bar: it must sit inside the edge too.
-        let refresh = app.buttons["Refresh"].firstMatch
-        for _ in 0..<3 where !refresh.exists {
-            app.buttons["Gram"].firstMatch.tap()
-            _ = refresh.waitForExistence(timeout: 3)
-        }
-        XCTAssertTrue(refresh.exists, "Gram should open with its header")
-        refresh.waitForSettledFrame()   // the section switch may still be animating
-        attach(app, "ipad-window-gram")
-        assertLinesUpWithWindowControls(refresh, in: window, "Gram")
         if !startedFullScreen {
             // The window survived from an earlier run; the window case above still ran.
             throw XCTSkip("started in a restored window: the full-screen half was not exercised")
@@ -120,7 +110,7 @@ final class AgentListChromeTests: XCTestCase {
     func testTabletSidebarCanHideAndRestoreInEverySection() throws {
         guard UIDevice.current.userInterfaceIdiom == .pad else { throw XCTSkip("Tablet split view") }
         let app = XCUIApplication.launched(mock: "list")
-        for section in ["Agents", "Gram", "Settings"] {
+        for section in ["Agents", "Settings"] {
             if section != "Agents" { app.buttons[section].firstMatch.tap() }
             let hide = app.buttons["Minimise sidebar"].firstMatch
             XCTAssertTrue(hide.waitForExistence(timeout: 10), section)
