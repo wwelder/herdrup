@@ -2,7 +2,6 @@ import SwiftUI
 import Foundation
 import UIKit    // UIPasteboard (Copy diagnostics)
 import UniformTypeIdentifiers
-import StoreKit // Product / tip jar (Settings' Support section)
 import UserNotifications // notification authorization status (Settings notify section)
 import HerdrKit
 
@@ -17,10 +16,6 @@ struct HerdrApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     init() {
-        // Start the tip-jar transaction listener at launch (mirroring PushCenter), so a
-        // transaction that completes outside a purchase() call — e.g. an Ask-to-Buy
-        // approved later — is finished promptly instead of waiting for Settings to open.
-        _ = TipStore.shared
         // Chat's column width became the width Chat and Gram share (#541): keep the reader's.
         ConversationColumnWidth.migrate(.standard)
         #if DEBUG
@@ -7569,9 +7564,6 @@ struct SettingsView: View {
     /// Whether the connected machine can send push (`notifications.status`); nil until the first
     /// answer. Refreshed with the permission on appear and on foreground.
     @State private var pushAvailability: PushAvailability?
-    /// The tip jar (StoreKit 2). Renders nothing until products load, so the section
-    /// is invisible before the App Store Connect products exist.
-    @ObservedObject private var tipStore = TipStore.shared
     /// Opens the Privacy/Terms/GitHub links in the system browser. Overridable in
     /// previews/UI-tests so automated runs never actually leave the app.
     @Environment(\.openURL) private var openURL
@@ -7646,9 +7638,6 @@ struct SettingsView: View {
         } message: {
             Text(federationError ?? "")
         }
-        // Load the tip products when Settings opens. No-ops after a successful load;
-        // re-tries after a prior failure, so products created in ASC later appear.
-        .task { await tipStore.loadProducts() }
         // Fetch the credential accounts for the Accounts section when Settings opens.
         // `try?` so an older daemon without `accounts.list` (or a transient failure)
         // just leaves the section empty rather than surfacing an error here.
@@ -7791,7 +7780,6 @@ struct SettingsView: View {
                                 previewsSection
                                 troubleSection
                                 helpSection
-                                supportSection
                                 aboutSection
                                 Group {
                                     versionFooter
@@ -7968,12 +7956,11 @@ struct SettingsView: View {
 
     /// iPad "App & About": the light sections that stay inline on the iPhone index.
     private func aboutDetail(showBack: Bool) -> some View {
-        detailScaffold(title: "App & About", subtitle: "Previews, trouble, help, support & legal",
+        detailScaffold(title: "App & About", subtitle: "Previews, trouble, help & legal",
                        showBack: showBack) {
             previewsSection
             troubleSection
             helpSection
-            supportSection
             aboutSection
             Group {
                 versionFooter
@@ -9319,83 +9306,6 @@ struct SettingsView: View {
             linkRow("Terms of Service", systemImage: "doc.text",
                     url: URL(string: "https://herdrup.themartian.app/legal/terms")!)
         }
-    }
-
-    /// The tip jar (StoreKit 2). Renders ONLY when products are loaded — `.idle`,
-    /// `.loading`, and `.unavailable` all render nothing, so the section is simply
-    /// absent before the App Store Connect products exist or when offline.
-    @ViewBuilder
-    private var supportSection: some View {
-        if case .loaded(let products) = tipStore.loadState, !products.isEmpty {
-            VStack(alignment: .leading, spacing: 0) {
-                sectionLabel("SUPPORT THE PROJECT")
-                VStack(spacing: 0) {
-                    ForEach(Array(products.enumerated()), id: \.element.id) { index, product in
-                        tipRow(product)
-                        if index < products.count - 1 { rowDivider }
-                    }
-                }
-                .settingsGroup()
-                .padding(.horizontal, 16).padding(.top, 10)
-                supportFeedback
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var supportFeedback: some View {
-        switch tipStore.purchaseState {
-        case .thankYou:
-            Text("Thank you, it means a lot.")
-                .font(Typography.app(12, .medium)).foregroundStyle(Palette.done)
-                .padding(.horizontal, 20).padding(.top, 8)
-        case .failed(let message):
-            Text(message)
-                .font(Typography.app(12)).foregroundStyle(Palette.died)
-                .padding(.horizontal, 20).padding(.top, 8)
-        case .idle, .purchasing:
-            EmptyView()
-        }
-    }
-
-    private func tipRow(_ product: Product) -> some View {
-        Button { Task { await tipStore.purchase(product) } } label: {
-            HStack(spacing: 12) {
-                Image(systemName: tipGlyph(for: product.id))
-                    .font(.system(size: 15, weight: .semibold)).foregroundStyle(Palette.textDim)
-                    .frame(width: 30, height: 30)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(Palette.surfaceRaised))
-                Text(product.displayName.isEmpty ? tipFallbackName(product.id) : product.displayName)
-                    .font(Typography.app(15)).foregroundStyle(Palette.text)
-                Spacer()
-                if isPurchasing(product) {
-                    ProgressView().tint(Palette.textDim)
-                } else {
-                    Text(product.displayPrice)
-                        .font(Typography.machine(13, .semibold)).foregroundStyle(Palette.text)
-                }
-            }
-            .padding(.horizontal, 18).padding(.vertical, 14)
-        }
-        .buttonStyle(.plain)
-        .disabled(isPurchasing(product))
-    }
-
-    private func isPurchasing(_ product: Product) -> Bool {
-        if case .purchasing(let id) = tipStore.purchaseState { return id == product.id }
-        return false
-    }
-
-    private func tipGlyph(for id: String) -> String {
-        if id == TipStore.coffeeID { return "cup.and.saucer.fill" }
-        if id == TipStore.lunchID { return "fork.knife" }
-        return "wineglass.fill"
-    }
-
-    private func tipFallbackName(_ id: String) -> String {
-        if id == TipStore.coffeeID { return "Coffee" }
-        if id == TipStore.lunchID { return "Lunch" }
-        return "Dinner"
     }
 
     /// The app names itself here — "herdrup mobile <version> (<build>)" — with the
