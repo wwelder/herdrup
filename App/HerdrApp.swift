@@ -3374,6 +3374,7 @@ struct TerminalHomeView: View {
         }
         .onChange(of: agents, initial: true) { _, roster in
             avatars.client = client
+            avatars.sessionClients = sessionClients
             avatars.update(agents: roster)
             groups.attach(client: client, host: hostKey)
         }
