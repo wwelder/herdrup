@@ -126,7 +126,7 @@ extension GuestPushSystem {
             await MainActor.run { UIApplication.shared.registerForRemoteNotifications() }
         },
         deviceToken: { await MainActor.run { PushCenter.shared.deviceToken } },
-        relayCapability: { await PushCenter.relay.capability(kind: .device, token: $0) },
+        relayCapability: { await PushCenter.relay?.capability(kind: .device, token: $0) },
         connect: { access in try await MainActor.run { try GuestConnection.open(access).client } })
 
     #if DEBUG

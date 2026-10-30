@@ -20,10 +20,6 @@ final class ChatUXSmokeTests: XCTestCase {
             "HERDR_CHAT_UX_SUBAGENTS": subagents ? "1" : "0"
         ].merging(environment) { _, new in new })
         let agent = app.staticTexts["herdr-app"].firstMatch
-        if !agent.exists {
-            let idle = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Idle")).firstMatch
-            if idle.waitForExistence(timeout: 5) { idle.tap() }
-        }
         XCTAssertTrue(agent.waitForExistence(timeout: 12), app.debugDescription)
         agent.tap()
         XCTAssertTrue(app.descendants(matching: .any)["chat-view"].firstMatch.waitForExistence(timeout: 12), app.debugDescription)
@@ -1016,6 +1012,7 @@ final class ChatUXSmokeTests: XCTestCase {
     /// Chat and Gram share one column width (#541): a width chosen in Chat is the width Gram
     /// shows, and a reset in Gram is Chat's too.
     func testChatAndGramShareTheColumnWidth() throws {
+        try XCTSkipIf(true, "the owner's Gram tab is hidden for now (HomeTab.allCases)")
         try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .pad, "the column width is resizable on regular width only")
         XCUIDevice.shared.orientation = .landscapeLeft
         rotated = true

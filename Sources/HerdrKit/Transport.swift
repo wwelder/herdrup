@@ -117,6 +117,9 @@ public protocol SessionListingTransport: HerdrTransport {
     /// One request to ANOTHER session on the same machine (nil = default), over the
     /// same SSH connection: how the session pills count who needs you elsewhere.
     func roundTrip(_ requestLine: String, inSession session: String?) async throws -> String
+    /// A transport for ANOTHER session on the same machine (nil = default), sharing this
+    /// one's connection: how the All view opens and acts on that session's agents.
+    func sessionTransport(_ session: String?) -> any HerdrTransport
 }
 
 public enum TransportError: Error, CustomStringConvertible {

@@ -2,7 +2,6 @@ import SwiftUI
 import Foundation
 import UIKit    // UIPasteboard (Copy diagnostics)
 import UniformTypeIdentifiers
-import StoreKit // Product / tip jar (Settings' Support section)
 import UserNotifications // notification authorization status (Settings notify section)
 import HerdrKit
 
@@ -17,10 +16,6 @@ struct HerdrApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     init() {
-        // Start the tip-jar transaction listener at launch (mirroring PushCenter), so a
-        // transaction that completes outside a purchase() call — e.g. an Ask-to-Buy
-        // approved later — is finished promptly instead of waiting for Settings to open.
-        _ = TipStore.shared
         // Chat's column width became the width Chat and Gram share (#541): keep the reader's.
         ConversationColumnWidth.migrate(.standard)
         #if DEBUG
@@ -265,13 +260,13 @@ struct RootView: View {
         guard let client = explicitClient ?? self.client, let token = push.deviceToken else { return }
         let routeCredentials = explicitCredentials ?? credentials
         Task { @MainActor in
-            let capability = await PushCenter.relay.capability(kind: .device, token: token)
+            let capability = await PushCenter.relay?.capability(kind: .device, token: token)
             // Read the prefs AFTER enrolling (which can take up to its timeout), so a toggle
             // flipped meanwhile is not overwritten by this call's older snapshot.
             let p = PushCenter.Prefs.current
             let muted = Array(MuteStore.shared.mutedPanes)
             do {
-                try await client.registerDevice(token: token, needsInput: p.needsInput, dies: p.dies, finishes: p.finishes, gram: p.gram, mutedPanes: muted, relayCapability: capability)
+                try await client.registerDevice(token: token, needsInput: p.needsInput, dies: p.dies, finishes: p.finishes, gram: false, mutedPanes: muted, relayCapability: capability)
             } catch {
                 return
             }
@@ -289,7 +284,7 @@ struct RootView: View {
     private func registerActivityPush(with explicitClient: HerdrClient? = nil) {
         guard let client = explicitClient ?? self.client, let token = liveActivity.pushToken else { return }
         Task {
-            let capability = await PushCenter.relay.capability(kind: .activity, token: token)
+            let capability = await PushCenter.relay?.capability(kind: .activity, token: token)
             try? await client.registerActivity(token: token, relayCapability: capability)
         }
     }
@@ -2030,6 +2025,9 @@ struct TerminalHomeView: View {
     private enum HomeTab: Hashable, CaseIterable {
         case agents, gram, settings
 
+        // ponytail: Gram is hidden for now (owner call); the code stays so it can come back.
+        static var allCases: [HomeTab] { [.agents, .settings] }
+
         var label: String {
             switch self {
             case .agents: return "Agents"
@@ -2081,10 +2079,7 @@ struct TerminalHomeView: View {
     /// Re-entry guard while a `New Terminal` split is in flight (also dims the row).
     @State private var creatingTerminal = false
     private static let maxLivePanes = 3
-    // Only the quiet tail (idle) starts collapsed — the model forbids a
-    // collapsed group from ever hiding something that wants attention.
-    @State private var collapsed: Set<AgentGroup> = Set(AgentGroup.allCases.filter { $0.startsCollapsed })
-    /// The Terminals section starts collapsed like the idle agents — a compact header row
+    /// The Terminals section starts collapsed — a compact header row
     /// (TERMINALS · N) the reader expands on demand, so it never competes with the herd.
     @State private var terminalsCollapsed = true
     /// The Archived section (issue #173) starts collapsed too — archived agents are
@@ -2097,6 +2092,14 @@ struct TerminalHomeView: View {
     @State private var glyphFieldSpotlight = TerminalGlyphFieldView.Spotlight()
     /// The machine's running herdr sessions (#347); the pills show with two or more.
     @State private var runningSessions: [HerdrSession] = []
+    /// The All view: every running session's agents in one list (the default); a session
+    /// pill filters to that session. Mirrored in `sessionCache` so a session switch keeps it.
+    @State private var showAllSessions = true
+    /// The other running sessions' agents, tagged with their session (`AgentInfo.inSession`).
+    @State private var otherRosters: [String: [AgentInfo]] = [:]
+    /// A client per other running session (same SSH connection), so their rows open and
+    /// act on their own herdr server.
+    @State private var sessionClients: [String: HerdrClient] = [:]
     /// Needs-you counts in the sessions this home is NOT on, by session name.
     @State private var otherSessionsNeedYou: [String: Int] = [:]
 
@@ -2116,7 +2119,8 @@ struct TerminalHomeView: View {
         case .needsYou, .unrecognised: tone = .waiting
         case .stopped: tone = .died
         case .working: tone = .working
-        case .idle: tone = row.status == .done ? .done : .dim
+        case .done: tone = .done
+        case .idle: tone = .dim
         }
         return .init(id: row.id, text: "\(row.title) › \(subtitle(row.info))", tone: tone)
     }
@@ -2133,7 +2137,7 @@ struct TerminalHomeView: View {
     /// appended (MRU) and the least-recently-used non-front slot is evicted past the cap
     /// (removal unmounts it → `Coordinator.stop()` closes its stream + SSH connection).
     private func open(_ slot: PaneSlot) {
-        if let i = slots.firstIndex(where: { $0.paneID == slot.paneID }) {
+        if let i = slots.firstIndex(where: { $0.id == slot.id }) {
             // Already mounted → keep it warm (instant), but REFRESH its metadata: a re-open from
             // the list carries a fresh title/agent/roster. Identity is the pane id (`.id`), so
             // replacing the struct does NOT remount the pane or reset its @State. Guard so a spawn
@@ -2143,7 +2147,8 @@ struct TerminalHomeView: View {
             slots.append(PaneSlot(paneID: existing.paneID, title: slot.title,
                                   agent: slot.agent ?? existing.agent,
                                   initialReply: existing.initialReply,
-                                  siblings: slot.siblings.isEmpty ? existing.siblings : slot.siblings))
+                                  siblings: slot.siblings.isEmpty ? existing.siblings : slot.siblings,
+                                  client: existing.client))
         } else {
             slots.append(slot)
             while slots.count > Self.maxLivePanes {
@@ -2155,7 +2160,19 @@ struct TerminalHomeView: View {
         // would otherwise leave the tab bar drawing over it. Selecting Agents keeps every
         // open path (row tap, deep-link, spawn, swipe-paging) consistent.
         selectedTab = .agents
-        frontID = slot.paneID
+        frontID = slot.id
+    }
+
+    /// The client for a row's own herdr session (the connected one unless the All view
+    /// listed it from another).
+    private func sessionClient(for info: AgentInfo) -> HerdrClient {
+        info.session.flatMap { sessionClients[$0] } ?? client
+    }
+
+    /// A pane slot for an agent, opened on that agent's own herdr session.
+    private func paneSlot(_ info: AgentInfo, title: String, siblings: [AgentInfo]) -> PaneSlot {
+        PaneSlot(paneID: info.paneID, title: title, agent: info, initialReply: "",
+                 siblings: siblings, client: info.session.flatMap { sessionClients[$0] })
     }
 
     /// Open a fresh plain-shell terminal: `pane.split` with NO `agent.start` yields a booting
@@ -2188,7 +2205,7 @@ struct TerminalHomeView: View {
             return
         case .stop(let row):
             await perform(verb: "stop", title: row.title) {
-                try await client.closePane(paneID: row.info.paneID)
+                try await sessionClient(for: row.info).closePane(paneID: row.info.paneID)
             }
         case .archive(let row):
             await perform(verb: "archive", title: row.title) {
@@ -2196,7 +2213,7 @@ struct TerminalHomeView: View {
                 // `by: "api"` and no reason — the same shape it writes for a pane that
                 // merely died, so a deliberate archive would be indistinguishable from
                 // bookkeeping to anything reading the record later.
-                try await client.archiveAgent(target: row.info.paneID,
+                try await sessionClient(for: row.info).archiveAgent(target: row.info.paneID,
                                               reason: HerdrKit.appArchiveReason,
                                               by: HerdrKit.appArchiveActor)
             }
@@ -2204,8 +2221,9 @@ struct TerminalHomeView: View {
             // Resume the preserved session into a fresh pane, restoring the agent's
             // identity. Target by name (or terminal id): the pane id no longer resolves.
             let target = unarchiveTarget(row.info)
+            let rowClient = sessionClient(for: row.info)
             await perform(verb: "unarchive", title: row.title) {
-                try await client.unarchiveAgent(target: target)
+                try await rowClient.unarchiveAgent(target: target)
             }
         }
     }
@@ -2237,11 +2255,18 @@ struct TerminalHomeView: View {
     /// gone (the pane then shows its exited state). Consumes the target so it fires once.
     private func applyDeepLink(afterLoad: Bool = false) {
         guard let paneID = push.pendingPaneID else { return }
+        // A push names the herdr session that sent it. Another session's agent is listed (in
+        // All, turned back on for it) under a session-qualified id, as the Live Activity's
+        // `AgentInfo.id` already is; this session's, or a server too old to say, is bare.
+        let otherSession = push.pendingPaneSession.flatMap { $0 == connectedSessionName ? nil : $0 }
+        if otherSession != nil, !showAllSessions { setShowAllSessions(true) }
+        let target = otherSession.map { "\($0)/\(paneID)" } ?? paneID
         // A refresh completed during momentum scrolling may be buffered rather than
         // displayed. An explicit push should still resolve against that newest data;
         // reading it here does not publish or relayout the roster under the gesture.
-        let sourceRoster = afterLoad ? (pendingRoster.snapshot ?? displayedRoster) : displayedRoster
-        let info = sourceRoster.agents.first { $0.paneID == paneID }
+        let sourceRoster = afterLoad || otherSession != nil
+            ? (pendingRoster.snapshot ?? displayedRoster) : displayedRoster
+        let info = sourceRoster.agents.first { $0.id == target }
         // On the onChange path (not post-load), only open once the target RESOLVES against the roster.
         // If it doesn't — an empty roster (first load) OR a stale one (agent spawned from the desktop
         // since the last refresh) — opening now would give a bare paneID title AND a sibling list that
@@ -2254,40 +2279,32 @@ struct TerminalHomeView: View {
             return
         }
         push.pendingPaneID = nil
+        push.pendingPaneSession = nil
         let siblings = sourceRoster.agentList.rows.filter(\.isLive).map(\.info)
-        open(PaneSlot(paneID: paneID, title: info?.displayName ?? paneID, agent: info,
-                      initialReply: "", siblings: siblings))
+        if let info {
+            open(paneSlot(info, title: info.displayName, siblings: siblings))
+        } else if otherSession == nil {
+            open(PaneSlot(paneID: paneID, title: "agent", agent: nil, initialReply: "", siblings: siblings))
+        }
+        // Another session's agent that isn't listed has no client here: opening its bare pane id
+        // would front this session's same-id pane instead.
     }
 
     /// A tapped gram push selects the Gram tab. Like `applyDeepLink`, it is consumed on
     /// the onChange path (app already up) AND post-load (a cold-launch tap set the flag
     /// before this view existed). Leaving it armed lets a later trigger re-invoke it.
     private func openGramIfPending() {
-        guard push.pendingGram else { return }
-        // The fork notice (a fullScreenCover) is up: don't switch under it; its
-        // onDismiss re-invokes this once it's gone.
-        if showForkNotice { return }
-        // A modal sheet is up, OR a spawned pane is queued to open: DEFER, do not
-        // consume. Consuming here would dismiss the sheet out from under the user (e.g.
-        // mid new-agent entry) and swallow the tap. Leave the push armed; the sheet's
-        // onDismiss re-invokes this once it's gone (and a queued spawn wins there,
-        // deliberately leaving the push pending rather than yanking the new terminal).
-        if activeCover != nil || pendingOpenSlot != nil { return }
-        push.pendingGram = false
-        // Drop any fronted terminal so the Gram tab is visible (the pane stays MOUNTED,
-        // so reopening it later is instant).
-        frontID = nil
-        selectedTab = .gram
+        // Gram is hidden (see HomeTab.allCases): drop the tap instead of opening it.
+        if push.pendingGram { push.pendingGram = false }
     }
 
     /// Swipe-page from the fronted pane to its prev/next sibling (clamped). `open()`s the
     /// neighbour — instant if it is already mounted.
     private func navigate(from slot: PaneSlot, delta: Int) {
-        guard let i = slot.siblings.firstIndex(where: { $0.paneID == frontID }),
+        guard let i = slot.siblings.firstIndex(where: { $0.id == frontID }),
               slot.siblings.indices.contains(i + delta) else { return }
         let next = slot.siblings[i + delta]
-        open(PaneSlot(paneID: next.paneID, title: next.displayName, agent: next,
-                      initialReply: "", siblings: slot.siblings))
+        open(paneSlot(next, title: next.displayName, siblings: slot.siblings))
     }
 
     /// Sections after applying the search box. Search filters the raw agents and
@@ -2307,22 +2324,16 @@ struct TerminalHomeView: View {
 
     /// The on-screen item directly above the open sidebar row: its bottom separator would
     /// touch the open row's highlight, so it is hidden (Messages does the same). A row is
-    /// identified by its pane ID, a group's disclosure row ("Idle  4 ›") by `disclosureKey`,
-    /// a folder row by `folderKey`.
+    /// identified by its pane ID, a folder row by `folderKey`.
     private func itemAboveOpenRow(_ sections: [AgentFolderLayout.Section]) -> String? {
         guard hSizeClass == .regular, let frontID else { return nil }
         var previous: String?
         for section in sections {
-            let isCollapsed = search.isEmpty && collapsed.contains(section.group)
-            if section.group.startsCollapsed && search.isEmpty {
-                previous = Self.disclosureKey(section.group)
-            }
-            guard !isCollapsed else { continue }
             for item in section.items {
                 switch item {
                 case .agent(let row, _, _):
-                    if row.info.paneID == frontID { return previous }
-                    previous = row.info.paneID
+                    if row.info.id == frontID { return previous }
+                    previous = row.info.id
                 case .folder(let summary):
                     previous = Self.folderKey(summary.folder.id)
                 }
@@ -2330,8 +2341,6 @@ struct TerminalHomeView: View {
         }
         return nil
     }
-
-    private static func disclosureKey(_ group: AgentGroup) -> String { "disclosure:\(group)" }
 
     /// The iPad (regular-width) layout: a two-column `NavigationSplitView`. Sidebar = the section
     /// pill + the agents list; detail = the selected agent's LIVE TERMINAL (or Gram / Settings for
@@ -2545,7 +2554,8 @@ struct TerminalHomeView: View {
                 case .settings:
                     SettingsView(
                         client: client,
-                        agents: agents,
+                        // Its bulk swap restarts agents on `client`: the connected session's only.
+                        agents: agents.filter { $0.session == nil },
                         host: host,
                         connected: error == nil && !loading,
                         canReconnect: rejectedFingerprint == nil,
@@ -3117,18 +3127,10 @@ struct TerminalHomeView: View {
                     .tag(HomeTab.agents)
                     .tabItem { Label(HomeTab.agents.label, systemImage: HomeTab.agents.icon) }
 
-                // Gram and Settings were modal covers; they are persistent tabs now.
-                // Both are nav-agnostic and take no onClose as tabs (no close button).
-                GramView(client: client, unread: gramUnread,
-                         showingSaved: $gramShowingSaved,
-                         newestToken: gramNewestToken)
-                    .tag(HomeTab.gram)
-                    .tabItem { Label(HomeTab.gram.label, systemImage: HomeTab.gram.icon) }
-                    .modifier(GramUnreadBadge(unread: gramUnread))
-
                 SettingsView(
                     client: client,
-                    agents: agents,
+                    // Its bulk swap restarts agents on `client`: the connected session's only.
+                    agents: agents.filter { $0.session == nil },
                     host: host,
                     connected: error == nil && !loading,
                     // Withhold reconnect during a host-key rejection — reconnecting then
@@ -3186,9 +3188,9 @@ struct TerminalHomeView: View {
         .onReceive(NotificationCenter.default.publisher(for: TerminalInteractionHarness.navigateNotification)) { note in
             guard ScreenshotMock.mode == .resize else { return }
             if note.object as? String == "close" {
-                if let frontID { slots.removeAll { $0.paneID == frontID } }
-                frontID = slots.last?.paneID
-            } else if let slot = slots.first(where: { $0.paneID != frontID }) {
+                if let frontID { slots.removeAll { $0.id == frontID } }
+                frontID = slots.last?.id
+            } else if let slot = slots.first(where: { $0.id != frontID }) {
                 open(slot)
             }
         }
@@ -3261,7 +3263,8 @@ struct TerminalHomeView: View {
         // writes the count on load / mark-read. Keyed on selectedTab so it
         // restarts on tab change and idles on Gram: exactly one poller is live.
         .task(id: selectedTab) {
-            guard selectedTab != .gram else { return }
+            // Gram is hidden (see HomeTab.allCases), so nothing reads the unread count.
+            guard selectedTab == .gram else { return }
             while !Task.isCancelled {
                 // Unconditional on purpose: `unread_only` is a small answer already,
                 // and this poller keeps no list to compare a digest against. The count is
@@ -3296,7 +3299,7 @@ struct TerminalHomeView: View {
             if !hostKey.isEmpty, session == nil { terminalsStore.migrateLegacyIfNeeded(host: hostKey) }
         }
         .onAppear { seedFromSessionCache() }
-        .task { await watchSessions() }
+        .task(id: showAllSessions) { await watchSessions() }
         // First launch: show the gestures tutorial once — but NOT over a pending push
         // deep-link (openGramIfPending / applyDeepLink would dismiss it to show Gram or
         // the pane, wasting the one-shot). Burn the seen-flag ONLY when we present.
@@ -3372,6 +3375,7 @@ struct TerminalHomeView: View {
         }
         .onChange(of: agents, initial: true) { _, roster in
             avatars.client = client
+            avatars.sessionClients = sessionClients
             avatars.update(agents: roster)
             groups.attach(client: client, host: hostKey)
         }
@@ -3430,9 +3434,10 @@ struct TerminalHomeView: View {
                 Button("Restart", role: .destructive) {
                     let target = row.info.paneID
                     let title = row.title
+                    let rowClient = sessionClient(for: row.info)
                     Task {
                         await perform(verb: "restart", title: title) {
-                            try await client.restartAgent(target: target)
+                            try await rowClient.restartAgent(target: target)
                         }
                     }
                 }
@@ -3451,9 +3456,10 @@ struct TerminalHomeView: View {
                     let target = cand.row.info.paneID
                     let title = cand.row.title
                     let accountID = cand.account.id
+                    let rowClient = sessionClient(for: cand.row.info)
                     Task {
                         await perform(verb: "swap", title: title) {
-                            try await client.restartAgent(target: target, account: accountID)
+                            try await rowClient.restartAgent(target: target, account: accountID)
                         }
                     }
                 }
@@ -3473,7 +3479,7 @@ struct TerminalHomeView: View {
             }
             .sheet(item: $transferCandidate) { candidate in
                 AgentSessionTransferSheet(
-                    client: client,
+                    client: sessionClient(for: candidate.row.info),
                     agent: candidate.row.info,
                     title: candidate.row.title,
                     source: candidate.source,
@@ -3567,9 +3573,10 @@ struct TerminalHomeView: View {
             ) { newName in
                 let paneID = row.info.paneID
                 let title = row.title
+                let rowClient = sessionClient(for: row.info)
                 Task {
                     await perform(verb: "rename", title: title) {
-                        try await client.renameAgent(target: paneID, name: newName)
+                        try await rowClient.renameAgent(target: paneID, name: newName)
                     }
                     // The server moved its folder membership and star to the new name.
                     await groups.refresh(force: true)
@@ -3635,8 +3642,16 @@ struct TerminalHomeView: View {
                     SessionPills(
                         sessions: runningSessions,
                         current: session,
+                        showAll: showAllSessions,
                         needsYou: sessionNeedsYou,
-                        onSelect: { onSwitchSession($0.default ? nil : $0.name) }
+                        onSelectAll: { setShowAllSessions(true) },
+                        onSelect: { picked in
+                            // A filter, not a mode: show one session's agents. The app moves
+                            // to that session so its rows get the full roster (folders, live
+                            // status, new agents land there).
+                            setShowAllSessions(false)
+                            if !isConnectedSession(picked) { onSwitchSession(picked.default ? nil : picked.name) }
+                        }
                     )
                     .padding(.top, 4).padding(.bottom, 6)
                 }
@@ -3644,67 +3659,115 @@ struct TerminalHomeView: View {
         }
     }
 
+    private func setShowAllSessions(_ showAll: Bool) {
+        sessionCache?.showAll = showAll
+        guard showAll != showAllSessions else { return }
+        showAllSessions = showAll
+        let latest = rosterRefreshState().latest
+        receiveRoster(agents: latest.agents, accounts: latest.accounts)
+    }
+
+    /// Whether `listed` is the session this home is connected to (nil = default).
+    private func isConnectedSession(_ listed: HerdrSession) -> Bool {
+        listed.default ? (session ?? "default") == "default" : listed.name == session
+    }
+
+    /// The connected session's name as the pills show it.
+    private var connectedSessionName: String {
+        runningSessions.first(where: isConnectedSession)?.name ?? session ?? "default"
+    }
+
     /// Agents that need you in each running session, for the pills: this session's count
     /// is the live roster's; the others come from `watchSessions`' periodic peek.
     private var sessionNeedsYou: [String: Int] {
         var counts = otherSessionsNeedYou
-        if let here = runningSessions.first(where: { $0.default ? (session ?? "default") == "default" : $0.name == session }) {
-            counts[here.name] = fullList.needsYouCount
+        if let here = runningSessions.first(where: isConnectedSession) {
+            counts[here.name] = AgentList(agents: agents.filter { $0.session == nil }).needsYouCount
         }
         return counts
     }
 
-    /// Keeps the session pills current (#347): the machine's running herdr sessions and how
-    /// many agents need you in each of the others, every 15 s. A machine whose herdr has no
-    /// sessions (or a failed listing) shows no pills. If the session this home is on is no
-    /// longer running (stopped since it was remembered), it moves back to the default one.
+    /// Keeps the session pills and the All view current (#347): the machine's running herdr
+    /// sessions, and every other session's agents — every 5 s while All shows them, every
+    /// 15 s for the pills' counts otherwise. A machine whose herdr has no sessions (or a
+    /// failed listing) shows no pills. If the connected session isn't running (it stopped,
+    /// or the machine runs only named sessions and no default one), the app moves to one
+    /// that is rather than report herdr as not running.
     @MainActor
     private func watchSessions() async {
         while !Task.isCancelled {
             if let listed = try? await client.listSessions() {
                 let running = listed.filter(\.running)
-                if let session, session != "default", !running.contains(where: { $0.name == session }) {
-                    onSwitchSession(nil)
+                if !running.contains(where: isConnectedSession),
+                   let next = running.first(where: \.default) ?? running.first {
+                    onSwitchSession(next.default ? nil : next.name)
                     return
                 }
                 runningSessions = running
                 sessionCache?.setRunningSessions(running)
                 var counts: [String: Int] = [:]
+                var rosters: [String: [AgentInfo]] = [:]
                 if running.count >= 2 {
-                    for other in running where (other.default ? "default" : other.name) != (session ?? "default") {
+                    for other in running where !isConnectedSession(other) {
                         let otherSession = other.default ? nil : other.name
                         if let agents = try? await client.agentList(inSession: otherSession) {
                             counts[other.name] = AgentList(agents: agents).needsYouCount
                             sessionCache?.store(agents, session: otherSession)
+                            if let tagged = taggedRoster(agents, in: other) { rosters[other.name] = tagged }
                         }
                     }
                 }
+                guard !Task.isCancelled else { return }
                 otherSessionsNeedYou = counts
+                setOtherRosters(rosters)
             } else {
                 runningSessions = []
+                setOtherRosters([:])
             }
-            try? await Task.sleep(nanoseconds: 15_000_000_000)
+            try? await Task.sleep(nanoseconds: showAllSessions ? agentListPollIntervalNanoseconds : 15_000_000_000)
         }
     }
 
+    /// `agents` from another session, tagged with it, once there is a client to act on them
+    /// with; nil when the transport can't address that session (its rows then stay out).
+    private func taggedRoster(_ agents: [AgentInfo], in other: HerdrSession) -> [AgentInfo]? {
+        if sessionClients[other.name] == nil {
+            guard let scoped = client.forSession(other.default ? nil : other.name) else { return nil }
+            sessionClients[other.name] = scoped
+        }
+        return agents.map { $0.inSession(other.name) }
+    }
+
+    private func setOtherRosters(_ rosters: [String: [AgentInfo]]) {
+        guard rosters != otherRosters else { return }
+        otherRosters = rosters
+        let latest = rosterRefreshState().latest
+        receiveRoster(agents: latest.agents, accounts: latest.accounts)
+    }
+
     /// After a session switch (#386), start from what the app already knows instead of an
-    /// empty screen: the running sessions (so the pills don't vanish and reappear), their
-    /// needs-you counts, and this session's agents if seen in the last minute. The first
-    /// load replaces all of it. Never overwrites a list a load has already published.
+    /// empty screen: the All/one-session choice, the running sessions (so the pills don't
+    /// vanish and reappear), their needs-you counts and agents, and this session's agents if
+    /// seen in the last minute. The first load replaces all of it. Never overwrites a list a
+    /// load has already published.
     private func seedFromSessionCache() {
         guard let sessionCache else { return }
+        if showAllSessions != sessionCache.showAll { showAllSessions = sessionCache.showAll }
         if runningSessions.isEmpty, !sessionCache.runningSessions.isEmpty {
             runningSessions = sessionCache.runningSessions
             var counts: [String: Int] = [:]
-            for other in runningSessions where (other.default ? "default" : other.name) != (session ?? "default") {
+            var rosters: [String: [AgentInfo]] = [:]
+            for other in runningSessions where !isConnectedSession(other) {
                 if let agents = sessionCache.roster(for: other.default ? nil : other.name) {
                     counts[other.name] = AgentList(agents: agents).needsYouCount
+                    if let tagged = taggedRoster(agents, in: other) { rosters[other.name] = tagged }
                 }
             }
             otherSessionsNeedYou = counts
+            otherRosters = rosters
         }
-        if agents.isEmpty, let cached = sessionCache.roster(for: session) {
-            receiveRoster(agents: cached, accounts: [])
+        if agents.isEmpty {
+            receiveRoster(agents: sessionCache.roster(for: session) ?? [], accounts: [])
         }
     }
 
@@ -3805,8 +3868,7 @@ struct TerminalHomeView: View {
                 waiting: search.isEmpty ? fullList.rows.filter { $0.group == .needsYou } : [],
                 onScrollToTop: { needsYouSight.scrollToTop() },
                 onOpen: { row in
-                    open(PaneSlot(paneID: row.info.paneID, title: row.title, agent: row.info,
-                                  initialReply: "", siblings: orderedSiblings))
+                    open(paneSlot(row.info, title: row.title, siblings: orderedSiblings))
                 }
             )
         }
@@ -3961,8 +4023,13 @@ struct TerminalHomeView: View {
     /// transform means an unchanged response performs no SwiftUI state write.
     @MainActor
     private func receiveRoster(agents: [AgentInfo], accounts: [CredentialAccount]) {
+        // Other sessions' rows are never patched in place: always rebuilt from `otherRosters`.
+        var merged = agents.filter { $0.session == nil }
+        if showAllSessions {
+            for name in otherRosters.keys.sorted() { merged += otherRosters[name] ?? [] }
+        }
         let snapshot = AgentRosterSnapshot(
-            agents: agents,
+            agents: merged,
             accounts: accounts,
             livePaneIDs: livePaneIDs
         )
@@ -3997,12 +4064,12 @@ struct TerminalHomeView: View {
     @MainActor
     private func updateLiveAgentBookkeeping() {
         guard !rosterScroll.isScrolling else { return }
-        let live = Set(displayedRoster.agents.map(\.paneID))
+        let live = Set(displayedRoster.agents.map(\.id))
         if !live.isSubset(of: everLive) {
             everLive.formUnion(live)
         }
         let retainedSlots = slots.filter {
-            $0.paneID == frontID || !everLive.contains($0.paneID) || live.contains($0.paneID)
+            $0.id == frontID || !everLive.contains($0.id) || live.contains($0.id)
         }
         if retainedSlots.count != slots.count {
             slots = retainedSlots
@@ -4108,9 +4175,10 @@ struct TerminalHomeView: View {
             Button("Close", role: .destructive) {
                 let archived = row.info
                 let title = row.title
+                let rowClient = sessionClient(for: row.info)
                 Task {
                     await perform(verb: "close", title: title) {
-                        try await client.forgetAgent(archived)
+                        try await rowClient.forgetAgent(archived)
                     }
                 }
             }
@@ -4218,35 +4286,20 @@ struct TerminalHomeView: View {
     }
 
     private func sectionView(_ section: AgentFolderLayout.Section, aboveOpen: String?) -> some View {
-        let group = section.group
-        // An active search overrides collapse — a match inside IDLE must not stay
-        // hidden behind a shut section the user did not open.
-        let isCollapsed = search.isEmpty && collapsed.contains(group)
         // Compute the paging list once per section, not inside the per-row button closure
         // (which SwiftUI evaluates eagerly for every row). `orderedSiblings` now filters
         // the cached roster list and performs no sorting.
         let siblings = orderedSiblings
         return VStack(alignment: .leading, spacing: 0) {
-            // #352: no section headers. Needs you, working and stopped rows follow each
-            // other in that order; a collapsible group (Idle) is one plain row at the end
-            // ("Idle  4 ›") that opens its rows underneath. An active search shows the rows
-            // without the disclosure, as before. The count includes the agents in its folders.
-            if group.startsCollapsed && search.isEmpty {
-                disclosureRow(group.sectionTitle.capitalized, count: section.agentCount, open: !isCollapsed,
-                              separator: aboveOpen != Self.disclosureKey(group)) {
-                    if isCollapsed { collapsed.remove(group) } else { collapsed.insert(group) }
-                }
-            }
-
-            if !isCollapsed {
-                ForEach(section.items) { item in
-                    switch item {
-                    case let .agent(row, starred, folderID):
-                        agentRowButton(row, starred: starred, indented: folderID != nil,
-                                       aboveOpen: aboveOpen, siblings: siblings)
-                    case let .folder(summary):
-                        folderRow(summary, aboveOpen: aboveOpen)
-                    }
+            // #352: no section headers, and no folded group: every agent shows, in herdr's
+            // priority order (needs you, done, working, idle; stopped and unrecognised high).
+            ForEach(section.items) { item in
+                switch item {
+                case let .agent(row, starred, folderID):
+                    agentRowButton(row, starred: starred, indented: folderID != nil,
+                                   aboveOpen: aboveOpen, siblings: siblings)
+                case let .folder(summary):
+                    folderRow(summary, aboveOpen: aboveOpen)
                 }
             }
         }
@@ -4257,10 +4310,9 @@ struct TerminalHomeView: View {
     private func agentRowButton(_ row: AgentRow, starred: Bool, indented: Bool,
                                 aboveOpen: String?, siblings: [AgentInfo]) -> some View {
         Button {
-            open(PaneSlot(paneID: row.info.paneID, title: row.title,
-                          agent: row.info, initialReply: "", siblings: siblings))
+            open(paneSlot(row.info, title: row.title, siblings: siblings))
         } label: {
-            card(row, separator: aboveOpen != row.info.paneID, starred: starred, indented: indented)
+            card(row, separator: aboveOpen != row.info.id, starred: starred, indented: indented)
         }
         .buttonStyle(.plain)
         // Over the sidebar on iPad / Mac, the hovered agent speaks in the empty
@@ -4295,14 +4347,14 @@ struct TerminalHomeView: View {
             }
             // Avatar… = pick this agent's mascot or photo (herdrup#538). Owner
             // only, on a daemon that stores avatars.
-            if avatars.canEdit {
+            if avatars.canEdit, row.info.session == nil {
                 StableMenuItem("Avatar…", systemImage: "person.crop.circle") {
                     avatarRow = row
                 }
             }
             // Star and Move to folder (#552): the swipe's choices, on a server
             // with folders.
-            if let name = row.info.name, let document = groups.document {
+            if row.info.session == nil, let name = row.info.name, let document = groups.document {
                 StableMenuItem(starred ? "Unstar" : "Star", systemImage: starred ? "star.slash" : "star") {
                     groups.apply(.setStar(name, !starred))
                 }
@@ -4453,7 +4505,7 @@ struct TerminalHomeView: View {
     /// The swipe-right actions of an agent row: Star or Unstar, and Move to folder. None on a
     /// server without folders, and none for an agent with no name to file it under.
     private func folderSwipeActions(_ row: AgentRow, starred: Bool) -> [RowSwipeAction] {
-        guard groups.document != nil, let name = row.info.name else { return [] }
+        guard groups.document != nil, row.info.session == nil, let name = row.info.name else { return [] }
         return [
             RowSwipeAction(title: starred ? "Unstar" : "Star",
                            systemImage: starred ? "star.slash.fill" : "star.fill",
@@ -4564,7 +4616,7 @@ struct TerminalHomeView: View {
         // The selected sidebar row retains its rounded highlight.
         let sidebar = hSizeClass == .regular
         let avatar = sidebar ? DesignTokens.Size.avatarSidebar : DesignTokens.Size.avatarPhone
-        let isOpen = sidebar && frontID == row.info.paneID
+        let isOpen = sidebar && frontID == row.info.id
         let nameSize = sidebar ? DesignTokens.Text.RowName.size : DesignTokens.Text.RowNamePhone.size
         let nameWeight = sidebar ? DesignTokens.Text.RowName.weight : DesignTokens.Text.RowNamePhone.weight
         return HStack(alignment: .center, spacing: 0) {
@@ -4692,18 +4744,22 @@ struct TerminalHomeView: View {
     }
 
     /// "folder · activity": folder is the last path component of `cwd`, activity
-    /// is the stripped terminal title. Either may be missing; the pane id is the
+    /// is the stripped terminal title. Either may be missing; the agent kind is the
     /// last resort so a row is never subtitle-less.
     private func subtitle(_ info: AgentInfo) -> String {
         let folder = info.cwd
             .map { URL(fileURLWithPath: $0).lastPathComponent }
             .flatMap { $0.isEmpty || $0 == "/" ? nil : $0 }
+        let detail: String
         switch (folder, info.activityText) {
-        case let (f?, a?): return "\(f) · \(a)"
-        case let (f?, nil): return f
-        case let (nil, a?): return a
-        case (nil, nil): return info.paneID
+        case let (f?, a?): detail = "\(f) · \(a)"
+        case let (f?, nil): detail = f
+        case let (nil, a?): detail = a
+        case (nil, nil): detail = info.agent ?? "terminal"
         }
+        // The All view mixes sessions: lead with the row's session.
+        guard showAllSessions, runningSessions.count >= 2 else { return detail }
+        return "\(info.session ?? connectedSessionName) · \(detail)"
     }
 
     // MARK: error / host-key recovery (functional, restyled to the tokens)
@@ -5049,7 +5105,7 @@ struct TerminalHomeView: View {
             liveEvents.ledger.record(update, receivedAt: now)
         }
         let latest = rosterRefreshState().latest
-        switch latest.agents.effect(of: line, receivedAt: now) {
+        switch latest.agents.filter({ $0.session == nil }).effect(of: line, receivedAt: now) {
         case .patch(let patched):
             receiveRoster(agents: patched, accounts: latest.accounts)
         case .reload:
@@ -5806,6 +5862,16 @@ struct TerminalPaneContent: View {
     // owns delivery then). A pending pre-fill does NOT disable the button once the
     // loop stops — instead the button ROUTES a pre-fill through the prompt-only
     // path (see the replyBar action), so it can never fall to rawKeys send_text.
+    /// Claude Code's own voice for this pane (`HerdrClient.streamAgentVoice`): the mic
+    /// streams there and Claude transcribes into its prompt, for Return to send. nil hides
+    /// the mic: other agents have no dictation mode to feed (Codex's voice is a spoken
+    /// conversation, omp has none), and a federated pane is on another machine.
+    private var agentVoice: (@MainActor (AsyncStream<Data>) async throws -> Void)? {
+        guard agent?.agent?.lowercased() == "claude", client.canStreamAgentVoice(pane: paneID) else { return nil }
+        let client = client, pane = paneID
+        return { audio in try await client.streamAgentVoice(pane: pane, audio: audio) }
+    }
+
     private var hasReplyContent: Bool {
         !replyAttachments.isEmpty || !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -5869,6 +5935,7 @@ struct TerminalPaneContent: View {
                 // tap enables direct PTY input; the reply bar remains the deliberate
                 // prompt path for agent messages.
                 LiveTerminalView(client: client, paneID: paneID,
+                                 geometryKey: agent?.session.map { "\($0)/\(paneID)" },
                                  onNavigate: onNavigate, isForeground: isForeground,
                                  // Releases the width claim while the scene is in the
                                  // background; cleared with the remount decision below.
@@ -6213,6 +6280,10 @@ struct TerminalPaneContent: View {
     /// The header's ⋯ overflow — the per-agent mute today, and the home for future
     /// per-agent actions. When muted, the button shows a struck bell so the state reads
     /// at a glance without opening the menu.
+    /// An agent from another herdr session (the All view): avatars and push mutes are keyed
+    /// on the connected session's server, so they are not offered for it.
+    private var fromOtherSession: Bool { agent?.session != nil }
+
     private var agentActionsMenu: some View {
         Menu {
             TerminalCopyMenuSection(client: client, paneID: paneID)
@@ -6236,14 +6307,16 @@ struct TerminalPaneContent: View {
                 } label: { Label("Share with someone", systemImage: "person.badge.plus") }
                 .accessibilityIdentifier("terminal-share")
             }
-            if agent != nil, avatars?.canEdit == true {
+            if agent != nil, !fromOtherSession, avatars?.canEdit == true {
                 AgentAvatarMenuButton { editingAvatar = true }
             }
-            Button {
-                mute.toggle(paneID)
-            } label: {
-                Label(mute.isMuted(paneID) ? "Unmute notifications" : "Mute notifications",
-                      systemImage: mute.isMuted(paneID) ? "bell" : "bell.slash")
+            if !fromOtherSession {
+                Button {
+                    mute.toggle(paneID)
+                } label: {
+                    Label(mute.isMuted(paneID) ? "Unmute notifications" : "Mute notifications",
+                          systemImage: mute.isMuted(paneID) ? "bell" : "bell.slash")
+                }
             }
             Button(role: .destructive) {
                 Task {
@@ -6254,7 +6327,7 @@ struct TerminalPaneContent: View {
                 Label("Close agent", systemImage: "xmark.circle")
             }
         } label: {
-            PaneActionsMenuLabel(notificationsOff: mute.isMuted(paneID))
+            PaneActionsMenuLabel(notificationsOff: !fromOtherSession && mute.isMuted(paneID))
         }
         .accessibilityIdentifier("terminal-actions")
         .sheet(isPresented: $editingAvatar) {
@@ -6649,11 +6722,13 @@ struct TerminalPaneContent: View {
                 ComposerAttachButton(busy: loadingReplyAttachment) { openReplyAttachSheet() }
                     .disabled(sending || autoDelivering || loadingReplyAttachment)
                     .accessibilityIdentifier("terminal-attach-button")
-                MicButton(text: $reply,
-                          isActive: isForeground && !autoDelivering, recording: $replyDictating,
-                          onStart: { ctrlArmed = false })
-                    .fixedSize()
-                    .disabled(sending || autoDelivering)
+                if let agentVoice {
+                    MicButton(text: $reply,
+                              isActive: isForeground && !autoDelivering, recording: $replyDictating,
+                              onStart: { ctrlArmed = false }, agentVoice: agentVoice)
+                        .fixedSize()
+                        .disabled(sending || autoDelivering)
+                }
                 if !hasReplyContent {
                     SavedPromptsMenu(onSelect: usePrompt)
                         .disabled(sending || autoDelivering || replyDictating)
@@ -7569,9 +7644,6 @@ struct SettingsView: View {
     /// Whether the connected machine can send push (`notifications.status`); nil until the first
     /// answer. Refreshed with the permission on appear and on foreground.
     @State private var pushAvailability: PushAvailability?
-    /// The tip jar (StoreKit 2). Renders nothing until products load, so the section
-    /// is invisible before the App Store Connect products exist.
-    @ObservedObject private var tipStore = TipStore.shared
     /// Opens the Privacy/Terms/GitHub links in the system browser. Overridable in
     /// previews/UI-tests so automated runs never actually leave the app.
     @Environment(\.openURL) private var openURL
@@ -7646,9 +7718,6 @@ struct SettingsView: View {
         } message: {
             Text(federationError ?? "")
         }
-        // Load the tip products when Settings opens. No-ops after a successful load;
-        // re-tries after a prior failure, so products created in ASC later appear.
-        .task { await tipStore.loadProducts() }
         // Fetch the credential accounts for the Accounts section when Settings opens.
         // `try?` so an older daemon without `accounts.list` (or a transient failure)
         // just leaves the section empty rather than surfacing an error here.
@@ -7791,7 +7860,6 @@ struct SettingsView: View {
                                 previewsSection
                                 troubleSection
                                 helpSection
-                                supportSection
                                 aboutSection
                                 Group {
                                     versionFooter
@@ -7968,12 +8036,11 @@ struct SettingsView: View {
 
     /// iPad "App & About": the light sections that stay inline on the iPhone index.
     private func aboutDetail(showBack: Bool) -> some View {
-        detailScaffold(title: "App & About", subtitle: "Previews, trouble, help, support & legal",
+        detailScaffold(title: "App & About", subtitle: "Previews, trouble, help & legal",
                        showBack: showBack) {
             previewsSection
             troubleSection
             helpSection
-            supportSection
             aboutSection
             Group {
                 versionFooter
@@ -8240,17 +8307,17 @@ struct SettingsView: View {
     }
     private var accountsHeaderTint: Color { exhaustedAccounts.isEmpty ? Palette.textFaint : Palette.waiting }
 
-    private var notifyOnCount: Int { [notifyNeedsInput, notifyDies, notifyFinishes, notifyGram].filter { $0 }.count }
+    private var notifyOnCount: Int { [notifyNeedsInput, notifyDies, notifyFinishes].filter { $0 }.count }
 
     /// iOS is blocking the alerts the user asked for (at least one on, permission denied).
     private var notifyBlocked: Bool { anyNotifyOn && notifyAuth == .denied }
 
     /// "N of 4 alerts on" — the Notifications detail-header subtitle.
-    private var notifyHeaderSubtitle: String { "\(notifyOnCount) of 4 alerts on" }
+    private var notifyHeaderSubtitle: String { "\(notifyOnCount) of 3 alerts on" }
 
     /// "N on · blocked" (amber) when iOS is blocking, else "N of 4 on".
     private var notifyManageValue: String {
-        notifyBlocked ? "\(notifyOnCount) on · blocked" : "\(notifyOnCount) of 4 on"
+        notifyBlocked ? "\(notifyOnCount) on · blocked" : "\(notifyOnCount) of 3 on"
     }
     private var notifyManageTint: Color { notifyBlocked ? Palette.waiting : Palette.textDim }
 
@@ -8834,8 +8901,6 @@ struct SettingsView: View {
                 groupedToggleRow("An agent dies", $notifyDies)
                 rowDivider
                 groupedToggleRow("An agent finishes", $notifyFinishes)
-                rowDivider
-                groupedToggleRow("A gram message arrives", $notifyGram)
                 if let fix = notifyPermissionFix {
                     rowDivider
                     notifyPermissionRow(fix)
@@ -8958,10 +9023,10 @@ struct SettingsView: View {
                         "This machine sends alerts with its own Apple push key.")
             case .unconfigured where status.mode == "direct":
                 return ("bell.slash", Palette.waiting, "This machine can't send notifications yet",
-                        "Herdr is set to push directly but has no Apple push key. Set push.mode to \"auto\" in Herdr's config to use the HerdrUp relay.")
+                        "Herdr is set to push directly but has no Apple push key. Add the Simcast push key to the [push] section of Herdr's config on this machine.")
             case .unconfigured:
                 return ("bell.slash", Palette.waiting, "This machine can't send notifications yet",
-                        "This iPhone hasn't joined the HerdrUp push relay yet. Allow notifications, then reopen HerdrUp while connected.")
+                        "This machine has no Apple push key yet. Add the Simcast push key to the [push] section of Herdr's config on this machine.")
             case .off:
                 return ("bell.slash", Palette.textDim, "Notifications are turned off in Herdr on this machine",
                         "Set push.mode to \"auto\" in Herdr's config on this machine to turn them on.")
@@ -8981,7 +9046,7 @@ struct SettingsView: View {
     /// At least one alert category is on. A permission FIX is only surfaced when this is
     /// true — if every toggle is off the system permission is moot, so we neither prompt
     /// nor point to Settings (matching AppDelegate.requestAuthorizationIfWanted's gating).
-    private var anyNotifyOn: Bool { notifyNeedsInput || notifyDies || notifyFinishes || notifyGram }
+    private var anyNotifyOn: Bool { notifyNeedsInput || notifyDies || notifyFinishes }
 
     private enum NotifyPermissionFix { case needAllow, denied }
     private var notifyPermissionFix: NotifyPermissionFix? {
@@ -9319,83 +9384,6 @@ struct SettingsView: View {
             linkRow("Terms of Service", systemImage: "doc.text",
                     url: URL(string: "https://herdrup.themartian.app/legal/terms")!)
         }
-    }
-
-    /// The tip jar (StoreKit 2). Renders ONLY when products are loaded — `.idle`,
-    /// `.loading`, and `.unavailable` all render nothing, so the section is simply
-    /// absent before the App Store Connect products exist or when offline.
-    @ViewBuilder
-    private var supportSection: some View {
-        if case .loaded(let products) = tipStore.loadState, !products.isEmpty {
-            VStack(alignment: .leading, spacing: 0) {
-                sectionLabel("SUPPORT THE PROJECT")
-                VStack(spacing: 0) {
-                    ForEach(Array(products.enumerated()), id: \.element.id) { index, product in
-                        tipRow(product)
-                        if index < products.count - 1 { rowDivider }
-                    }
-                }
-                .settingsGroup()
-                .padding(.horizontal, 16).padding(.top, 10)
-                supportFeedback
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var supportFeedback: some View {
-        switch tipStore.purchaseState {
-        case .thankYou:
-            Text("Thank you, it means a lot.")
-                .font(Typography.app(12, .medium)).foregroundStyle(Palette.done)
-                .padding(.horizontal, 20).padding(.top, 8)
-        case .failed(let message):
-            Text(message)
-                .font(Typography.app(12)).foregroundStyle(Palette.died)
-                .padding(.horizontal, 20).padding(.top, 8)
-        case .idle, .purchasing:
-            EmptyView()
-        }
-    }
-
-    private func tipRow(_ product: Product) -> some View {
-        Button { Task { await tipStore.purchase(product) } } label: {
-            HStack(spacing: 12) {
-                Image(systemName: tipGlyph(for: product.id))
-                    .font(.system(size: 15, weight: .semibold)).foregroundStyle(Palette.textDim)
-                    .frame(width: 30, height: 30)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(Palette.surfaceRaised))
-                Text(product.displayName.isEmpty ? tipFallbackName(product.id) : product.displayName)
-                    .font(Typography.app(15)).foregroundStyle(Palette.text)
-                Spacer()
-                if isPurchasing(product) {
-                    ProgressView().tint(Palette.textDim)
-                } else {
-                    Text(product.displayPrice)
-                        .font(Typography.machine(13, .semibold)).foregroundStyle(Palette.text)
-                }
-            }
-            .padding(.horizontal, 18).padding(.vertical, 14)
-        }
-        .buttonStyle(.plain)
-        .disabled(isPurchasing(product))
-    }
-
-    private func isPurchasing(_ product: Product) -> Bool {
-        if case .purchasing(let id) = tipStore.purchaseState { return id == product.id }
-        return false
-    }
-
-    private func tipGlyph(for id: String) -> String {
-        if id == TipStore.coffeeID { return "cup.and.saucer.fill" }
-        if id == TipStore.lunchID { return "fork.knife" }
-        return "wineglass.fill"
-    }
-
-    private func tipFallbackName(_ id: String) -> String {
-        if id == TipStore.coffeeID { return "Coffee" }
-        if id == TipStore.lunchID { return "Lunch" }
-        return "Dinner"
     }
 
     /// The app names itself here — "herdrup mobile <version> (<build>)" — with the
@@ -9983,6 +9971,9 @@ struct SessionsMockTransport: SessionListingTransport {
     }
     func roundTrip(_ requestLine: String, inSession session: String?) async throws -> String {
         try await base.roundTrip(requestLine)
+    }
+    func sessionTransport(_ session: String?) -> any HerdrTransport {
+        SessionsMockTransport(session: session)
     }
 }
 

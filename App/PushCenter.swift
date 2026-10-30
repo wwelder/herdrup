@@ -12,14 +12,12 @@ import SwiftUI
 final class PushCenter: ObservableObject {
     static let shared = PushCenter()
 
-    /// Enrolls device and Live Activity tokens with the push relay, so a machine without its own
-    /// APNs key can still push. Debug builds carry sandbox tokens; TestFlight and the App Store
-    /// carry production ones.
-    #if DEBUG
-    static let relay = PushRelayEnroller(environment: .sandbox)
-    #else
-    static let relay = PushRelayEnroller(environment: .production)
-    #endif
+    /// The publisher's push relay (`push.herdrup.themartian.app`) signs for com.jerryfane.herdr
+    /// only, so it can't deliver to this build's inc.simcast.herdrup tokens. Machines push
+    /// directly instead: herdr's `[push]` config holds the Simcast APNs key, with topic
+    /// inc.simcast.herdrup. With no enroller the app never sends a relay capability.
+    // ponytail: no relay; a Simcast-run PushRelay (sandbox in DEBUG) goes here if per-machine keys get old.
+    static let relay: PushRelayEnroller? = nil
 
     /// The APNs device token (lowercase hex), set by the AppDelegate on registration. Persisted so
     /// a relaunch/reconnect can re-send it to the server before any new registration callback.
@@ -52,11 +50,16 @@ final class PushCenter: ObservableObject {
         guard token != deviceToken else { return }
         deviceToken = token
         UserDefaults.standard.set(token, forKey: Self.tokenKey)
-        Task { _ = await Self.relay.capability(kind: .device, token: token) }
+        Task { _ = await Self.relay?.capability(kind: .device, token: token) }
     }
 
+    /// The herdr session that sent the `pendingPaneID` push; nil for a Live Activity tap or a
+    /// server older than the payload's `session`.
+    var pendingPaneSession: String?
+
     /// A notification was tapped for `paneID` — deep-link to it when the view is ready.
-    func tapped(paneID: String) {
+    func tapped(paneID: String, session: String? = nil) {
+        pendingPaneSession = session
         pendingPaneID = paneID
     }
 

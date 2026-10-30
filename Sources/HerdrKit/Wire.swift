@@ -363,6 +363,16 @@ public struct AgentInfo: Decodable, Equatable, Sendable, Identifiable {
     /// device and every guest of the agent. Absent means the agent's initial tile. Decoded
     /// leniently (`AgentAvatarDescriptor` never throws), so an odd value cannot fail the list.
     public let avatar: AgentAvatarDescriptor?
+    /// The herdr session this row was listed from, when the app shows several sessions at
+    /// once; nil is the session the app is connected to. Set by the app, never decoded.
+    public internal(set) var session: String? = nil
+
+    /// This row, tagged as listed from herdr session `name` (see `session`).
+    public func inSession(_ name: String) -> AgentInfo {
+        var copy = self
+        copy.session = name
+        return copy
+    }
 
     /// Stable list identity. A LIVE agent is keyed on its pane id, which is unique
     /// and stable while it runs. An ARCHIVED agent has NO pane — the server empties
@@ -377,9 +387,12 @@ public struct AgentInfo: Decodable, Equatable, Sendable, Identifiable {
     /// across archive/unarchive (the server rehydrates the same terminal id on
     /// resume). It is also what `agent.unarchive` accepts as a target. `name` is the
     /// last resort — it can be nil for an unnamed agent, so it cannot lead.
+    ///
+    /// Pane ids repeat across herdr sessions (each starts at `w1:p1`), so a row tagged with
+    /// another session is keyed `<session>/<id>`.
     public var id: String {
-        if !paneID.isEmpty { return paneID }
-        return terminalID ?? name ?? paneID
+        let base = !paneID.isEmpty ? paneID : (terminalID ?? name ?? paneID)
+        return session.map { "\($0)/\(base)" } ?? base
     }
 
     /// This agent has been archived (its pane released, session preserved).
@@ -388,7 +401,7 @@ public struct AgentInfo: Decodable, Equatable, Sendable, Identifiable {
     /// Human label for a pane, preferring the agent's assigned name; a federated agent's
     /// shows its machine's label rather than its id (`FederatedName`).
     public var displayName: String {
-        FederatedName.display(name ?? terminalTitleStripped ?? paneID,
+        FederatedName.display(name ?? terminalTitleStripped ?? agent ?? "agent",
                               machineID: machineID, machineLabel: machineLabel)
     }
 

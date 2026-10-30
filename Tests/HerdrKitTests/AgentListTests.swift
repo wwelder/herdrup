@@ -102,7 +102,7 @@ final class AgentListTests: XCTestCase {
         // Controls: the SAME statuses without the flag must land where grouping puts them,
         // so the loop above is about input_pending and not about the fixture.
         for (status, expected) in [("idle", AgentGroup.idle), ("working", .working),
-                                   ("done", .idle), ("unknown", .unrecognised),
+                                   ("done", .done), ("unknown", .unrecognised),
                                    ("blocked", .needsYou), ("wat", .unrecognised)] {
             let row = AgentRow(info: try agent(pane: "p1", status: status))
             XCTAssertEqual(row.group, expected, "control for \(status)")
@@ -373,6 +373,23 @@ final class AgentListTests: XCTestCase {
                        + "— not paneID order p1<p2<p3")
     }
 
+    /// herdr's agent-panel order: latest state change first. `status_since_unix_ms` wins
+    /// over the completed turn, because a working agent's last completed turn is the
+    /// previous one; and it orders across sessions, where `state_change_seq` cannot.
+    func testWithinGroupSortsByLatestStateChange() throws {
+        func since(_ pane: String, _ ms: Int, completed: Int64) throws -> AgentInfo {
+            try JSONDecoder().decode(AgentInfo.self, from: JSONSerialization.data(withJSONObject: [
+                "pane_id": pane, "agent_status": "working", "status_since_unix_ms": ms,
+                "last_completed_turn": ["completed_unix_ms": completed],
+            ]))
+        }
+        let list = AgentList(agents: [
+            try since("p1", 500, completed: 900),   // finished late, started working early
+            try since("p2", 800, completed: 100),   // started working most recently
+        ])
+        XCTAssertEqual(list.rows.map(\.info.paneID), ["p2", "p1"])
+    }
+
     // MARK: - federation fields (daemon W3+)
 
     /// A remote agent carries machine_id / reachability / last_known_status; they
@@ -604,16 +621,6 @@ final class AgentListTests: XCTestCase {
         XCTAssertTrue(list.isQuiet)
     }
 
-    /// The unrecognised group must never start collapsed — sorting it high is
-    /// pointless if the section is shut by default.
-    func testOnlyTheIdleGroupStartsCollapsed() {
-        for group in AgentGroup.allCases {
-            XCTAssertEqual(group.startsCollapsed, group == .idle,
-                           "\(group.label) has the wrong collapse default; a collapsed group must "
-                           + "not be able to hide something wanting attention")
-        }
-    }
-
     // MARK: - grouping and order
 
     func testGroupsSortNeedsYouFirstAndIdleLast() throws {
@@ -719,7 +726,7 @@ final class AgentListTests: XCTestCase {
         // Same trap: `isQuiet` is true of an empty list, and this passed with
         // the fixture removed entirely. Pin that the quiet rows are actually
         // present and actually quiet-by-status before concluding anything.
-        XCTAssertEqual(quiet.rows.map(\.status), [.idle, .done],
+        XCTAssertEqual(quiet.rows.map(\.status), [.done, .idle],
                        "the quiet fixture is not present; isQuiet below proves nothing")
         XCTAssertTrue(quiet.isQuiet)
         XCTAssertEqual(quiet.needsYouCount, 0)

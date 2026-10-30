@@ -15,7 +15,11 @@ struct PaneSlot: Identifiable {
     let initialReply: String
     /// The ordered agents this pane can swipe-page through (snapshot at open time).
     let siblings: [AgentInfo]
-    var id: String { paneID }
+    /// The client for the agent's own herdr session when it is not the connected one
+    /// (the All view lists every session); nil uses the container's client.
+    var client: HerdrClient? = nil
+    /// Session-qualified like `AgentInfo.id`: pane ids repeat across herdr sessions.
+    var id: String { agent?.session.map { "\($0)/\(paneID)" } ?? paneID }
 }
 
 /// Hosts the recently-opened terminal panes MOUNTED but hidden, so reopening — and swiping
@@ -48,9 +52,9 @@ struct PaneKeepAliveContainer: View {
     var body: some View {
         ZStack {
             ForEach(slots) { slot in
-                let isFront = slot.paneID == frontID
+                let isFront = slot.id == frontID
                 TerminalPaneContent(
-                    client: client,
+                    client: slot.client ?? client,
                     paneID: slot.paneID,
                     title: slot.title,
                     agent: slot.agent,
@@ -64,7 +68,7 @@ struct PaneKeepAliveContainer: View {
                     // STABLE identity — the pane id, NEVER a swipe-varying `currentID`. So a
                     // swipe or an LRU reorder flips visibility without giving the subtree a new
                     // identity (which would dismantle it and re-stream from a cold handshake).
-                    .id(slot.paneID)
+                    .id(slot.id)
                     .opacity(isFront ? 1 : 0)
                     .allowsHitTesting(isFront)
                     .zIndex(isFront ? 1 : 0)

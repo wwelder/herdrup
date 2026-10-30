@@ -1,4 +1,5 @@
 import Foundation
+import NIOCore
 
 /// Typed client for the herdr JSON API.
 ///
@@ -111,6 +112,13 @@ public actor HerdrClient {
             throw TransportError.machineCommandFailed(stderr: "Sessions require an SSH connection")
         }
         return try await sessionTransport.listSessions()
+    }
+
+    /// A client for another herdr session on this machine (nil = default), sharing this
+    /// one's SSH connection. nil when the transport can't address other sessions.
+    public nonisolated func forSession(_ session: String?) -> HerdrClient? {
+        guard let sessions = transport as? any SessionListingTransport else { return nil }
+        return HerdrClient(transport: sessions.sessionTransport(session))
     }
 
     /// `agent.list` from another herdr session on the same machine (#347), for the
@@ -412,6 +420,28 @@ public actor HerdrClient {
             return nil
         }
         return await citadel.openPaneInput(openLine: openLine)
+    }
+
+    /// Whether `streamAgentVoice` can reach `pane`: an SSH machine and a local pane.
+    public func canStreamAgentVoice(pane: String) -> Bool {
+        transport is CitadelTransport && CitadelTransport.agentVoiceCommand(pane: pane, session: nil) != nil
+    }
+
+    /// Feeds `audio` (16 kHz mono s16le PCM chunks) to Claude Code's own voice dictation in
+    /// `pane` until the stream finishes; the transcript lands in Claude's prompt. Throws the
+    /// machine's note when it cannot (see `CitadelTransport.agentVoiceScript`).
+    public func streamAgentVoice(pane: String, audio: AsyncStream<Data>) async throws {
+        guard let citadel = transport as? CitadelTransport else {
+            throw TransportError.machineCommandFailed(stderr: "Voice needs an SSH machine.")
+        }
+        let buffers = AsyncStream<ByteBuffer> { continuation in
+            let pump = Task {
+                for await chunk in audio { continuation.yield(ByteBuffer(bytes: chunk)) }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in pump.cancel() }
+        }
+        try await citadel.streamAgentVoice(pane: pane, audio: buffers)
     }
 
     struct RegisterDeviceParams: Encodable {

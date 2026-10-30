@@ -101,22 +101,23 @@ final class MockWireFixtureTests: XCTestCase {
 
     /// The whole point of the fixture: rendered through the REAL grouping model
     /// with the mock census, it must produce the mockup's composition —
-    /// NEEDS YOU 2, STOPPED 1 (from liveness, not a status string), WORKING 1,
-    /// IDLE 4 (done folded in). A regression in fixture OR model trips here.
+    /// NEEDS YOU 2, STOPPED 1 (from liveness, not a status string), DONE 1,
+    /// WORKING 1, IDLE 3 (herdr's order: done above working). A regression in fixture OR model trips here.
     func testMockRendersMockupComposition() async throws {
         let client = HerdrClient(transport: FixtureTransport())
         let agents = try await client.agentList()
         let list = AgentList(agents: agents, livePaneIDs: MockWireFixtures.demoLivePaneIDs)
 
         XCTAssertEqual(list.sections.map(\.group),
-                       [.needsYou, .stopped, .working, .idle],
+                       [.needsYou, .stopped, .done, .working, .idle],
                        "sections did not render in the mockup's order/composition")
         let counts = Dictionary(uniqueKeysWithValues: list.sections.map { ($0.group, $0.rows.count) })
         XCTAssertEqual(counts[.needsYou], 3,
                        "two locally blocked, plus the degraded federated row escalated on its last-known blocked")
         XCTAssertEqual(counts[.stopped], 1)
         XCTAssertEqual(counts[.working], 1)
-        XCTAssertEqual(counts[.idle], 4, "the done agent should fold into idle, making IDLE · 4")
+        XCTAssertEqual(counts[.done], 1)
+        XCTAssertEqual(counts[.idle], 3)
         XCTAssertEqual(list.needsYouCount, 3, "header would show the wrong 'N need you'")
         // And one of those three is a MAYBE, which every surface must be able to qualify.
         XCTAssertEqual(list.unconfirmedNeedsYouCount, 1)

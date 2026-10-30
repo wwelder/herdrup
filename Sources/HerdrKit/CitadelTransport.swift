@@ -118,6 +118,10 @@ public actor CitadelTransport: HerdrTransport, MachineFederationTransport, Sessi
         return CitadelTransport(credentials: scoped, sharing: self)
     }
 
+    public nonisolated func sessionTransport(_ session: String?) -> any HerdrTransport {
+        forSession(session)
+    }
+
     /// The herdr session this transport addresses; nil is the default session.
     public nonisolated var session: String? { credentials.session }
 
@@ -448,6 +452,48 @@ public actor CitadelTransport: HerdrTransport, MachineFederationTransport, Sessi
             return nil
         }
         return channel
+    }
+
+    /// Claude Code's own voice dictation, fed from the phone: stdin is 16 kHz mono s16le
+    /// PCM. On the host it plays into a PulseAudio/PipeWire null sink whose monitor is the
+    /// default mic (made on first use), and holds Space in the pane through herdr, which is
+    /// Claude Code's hold-to-talk: Claude records that mic, transcribes it in its cloud, and
+    /// leaves the text in its prompt when the Spaces stop at stdin's end. Eight Spaces
+    /// first, then a look for Claude's "listening…": if its voice is off they are deleted
+    /// and the command exits 5 with a note. The Space loop ends with the shell (capped at
+    /// ~7 minutes), so a dropped link never leaves it typing.
+    /// ponytail: Linux hosts with pactl only; a Mac host would need a virtual audio device.
+    static let agentVoiceScript = herdrResolution + #"P=$1; H="$HERDR"; [ -n "$2" ] && H="$HERDR --session $2"; command -v pacat >/dev/null && command -v pactl >/dev/null || { echo "This machine has no PulseAudio or PipeWire for a virtual mic." >&2; exit 3; }; pactl list short sinks | grep -q herdrup_mic_sink || { pactl load-module module-null-sink sink_name=herdrup_mic_sink >/dev/null && pactl load-module module-remap-source master=herdrup_mic_sink.monitor source_name=herdrup_mic >/dev/null; } || { echo "Could not make the virtual mic on this machine." >&2; exit 4; }; pactl set-default-source herdrup_mic; i=0; while [ $i -lt 8 ]; do $H pane send-keys "$P" space >/dev/null 2>&1; sleep 0.03; i=$((i+1)); done; $H pane read "$P" --source visible --lines 60 2>/dev/null | tail -n 15 | grep -qiE "listening|recording|warming|connecting" || { $H pane send-keys "$P" backspace backspace backspace backspace backspace backspace backspace backspace >/dev/null 2>&1; echo "Claude Code is not listening. Turn its voice on with /voice, in insert mode." >&2; exit 5; }; ( i=0; while kill -0 $$ 2>/dev/null && [ $i -lt 10000 ]; do $H pane send-keys "$P" space >/dev/null 2>&1; sleep 0.03; i=$((i+1)); done ) </dev/null >/dev/null 2>&1 & sleep 0.3; exec pacat --playback -d herdrup_mic_sink --raw --format=s16le --rate=16000 --channels=1 --latency-msec=100"#
+
+    /// The exec command line for `agentVoiceScript` on `pane`, or nil for a pane it cannot
+    /// name safely or a federated one (the script runs on this machine).
+    static func agentVoiceCommand(pane: String, session: String?) -> String? {
+        guard PaneInputChannel.canStream(pane: pane), isShellLiteral(pane) else { return nil }
+        let sessionArgument = flagSession(session).map { " " + $0 } ?? ""
+        return "/bin/sh -c '" + agentVoiceScript + "' sh '" + pane + "'" + sessionArgument
+    }
+
+    /// Streams `audio` into Claude Code's voice in `pane` until the audio ends. A host that
+    /// refuses (no audio server, Claude not listening) throws its note.
+    func streamAgentVoice(pane: String, audio: AsyncStream<ByteBuffer>) async throws {
+        guard let command = Self.agentVoiceCommand(pane: pane, session: credentials.session) else {
+            throw TransportError.machineCommandFailed(stderr: "Voice can't reach this pane.")
+        }
+        let link = try await backend.openLink(command)
+        let stderr = VoiceStderr()
+        do {
+            try await link.run(stdin: audio) { chunk in
+                if case .stderr(let bytes) = chunk { await stderr.append(String(buffer: bytes)) }
+            }
+        } catch is RemoteExitError {
+            let note = await stderr.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw TransportError.machineCommandFailed(stderr: note.isEmpty ? "Voice stopped on the machine." : note)
+        }
+    }
+
+    private actor VoiceStderr {
+        var text = ""
+        func append(_ more: String) { text += more }
     }
 
     /// The herdr sessions on this machine (`herdr session list --json`, herdr >= 0.5.3), #347.

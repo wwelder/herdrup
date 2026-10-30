@@ -248,8 +248,9 @@ public enum PushTapTarget: Equatable, Sendable {
     case droppedGuest
     /// The owner's Gram page.
     case ownerGram
-    /// The owner's pane.
-    case ownerPane(String)
+    /// The owner's pane, and the herdr session that sent the push (herdr's `session`; nil from
+    /// servers older than the field): pane ids repeat across sessions.
+    case ownerPane(String, session: String? = nil)
     /// Nothing to open.
     case none
 
@@ -259,7 +260,7 @@ public enum PushTapTarget: Equatable, Sendable {
         } else if userInfo["gram"] as? Bool == true {
             self = .ownerGram
         } else if let paneID = userInfo["pane_id"] as? String, !paneID.isEmpty {
-            self = .ownerPane(paneID)
+            self = .ownerPane(paneID, session: userInfo["session"] as? String)
         } else {
             self = .none
         }

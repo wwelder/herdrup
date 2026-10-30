@@ -20,7 +20,7 @@
 #   scripts/testflight.sh                         # archive + export a signed .ipa (no upload)
 #   TESTFLIGHT_UPLOAD=1 scripts/testflight.sh     # ...and upload to TestFlight
 #
-# Upload requires the App Store Connect app record for com.jerryfane.herdr to exist.
+# Upload requires the App Store Connect app record for inc.simcast.herdrup to exist.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -74,5 +74,5 @@ else
   [ -n "$IPA" ] || { echo "error: no .ipa produced in $EXPORT_DIR" >&2; exit 1; }
   echo "==> archived + exported: $IPA (build $BUILD_NUMBER)"
   echo "    Set TESTFLIGHT_UPLOAD=1 to upload. Upload needs the App Store Connect"
-  echo "    app record for com.jerryfane.herdr."
+  echo "    app record for inc.simcast.herdrup."
 fi

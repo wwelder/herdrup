@@ -74,8 +74,11 @@ public enum AgentGroup: Int, Equatable, Sendable, CaseIterable, Comparable {
     /// new upstream state permanently unobservable. Being wrong here is cheap —
     /// a stale row shown too prominently. Being wrong the other way is silent.
     case unrecognised = 2
-    case working = 3
-    case idle = 4
+    /// Finished a turn the user has not looked at yet. Above working, as herdr's own
+    /// agent panel sorts it (herdr src/app/agent_view.rs `agent_entry_attention_priority`).
+    case done = 3
+    case working = 4
+    case idle = 5
 
     public static func < (a: AgentGroup, b: AgentGroup) -> Bool {
         a.rawValue < b.rawValue
@@ -86,15 +89,11 @@ public enum AgentGroup: Int, Equatable, Sendable, CaseIterable, Comparable {
         case .needsYou: return "needs you"
         case .stopped: return "stopped"
         case .unrecognised: return "unrecognised"
+        case .done: return "done"
         case .working: return "working"
         case .idle: return "idle"
         }
     }
-
-    /// Whether the section starts collapsed. Only the quiet tail does — a
-    /// collapsed group must never be able to hide something wanting attention,
-    /// which is why `.unrecognised` is not in here.
-    public var startsCollapsed: Bool { self == .idle }
 }
 
 /// One row of the list, and the grouping decision for it.
@@ -197,7 +196,8 @@ public struct AgentRow: Equatable, Sendable, Identifiable {
         switch status {
         case .blocked: return .needsYou
         case .working: return .working
-        case .idle, .done: return .idle
+        case .done: return .done
+        case .idle: return .idle
         // Both of these mean "this build cannot say what is happening", and
         // both surface rather than sink. They stay SEPARATE cases in the status
         // type so a diagnostic can tell "the server could not tell" from "this
@@ -288,7 +288,7 @@ public struct AgentList: Equatable, Sendable {
             case .needsYou:     return r.hasUnconfirmedState ? 1 : 0
             case .unrecognised: return 2
             case .working:      return 3
-            case .idle:         return 4
+            case .done, .idle:  return 4
             case .stopped:      return 5
             }
         }
@@ -357,7 +357,7 @@ public struct AgentList: Equatable, Sendable {
         case .needsYou, .unrecognised: word = "needsYou"
         case .stopped:                 word = "stopped"
         case .working:                 word = "working"
-        case .idle, .none:             word = "idle"
+        case .done, .idle, .none:      word = "idle"
         }
         let attention = rows.filter { $0.group == .needsYou || $0.group == .unrecognised }.count
         let unconfirmed = rows.filter {
@@ -381,7 +381,7 @@ public struct AgentList: Equatable, Sendable {
             totalCount: rows.count,
             workingSinceUnixSeconds: since,
             blockedSinceUnixSeconds: blockedSince,
-            agentID: lead?.info.paneID)
+            agentID: lead?.info.id)
     }
 
     /// THE WORDING SPEC for "N need you", in HerdrKit so every surface can share one rule
@@ -439,18 +439,20 @@ public struct AgentList: Equatable, Sendable {
             AgentRow(info: info, isLive: livePaneIDs.map { $0.contains(info.paneID) } ?? true)
         }
         // Group order first (the screen's primary signal — "does anything need me").
-        // WITHIN a group, most-recently-active first: the agent whose last turn
-        // completed most recently sorts to the top, using the server's wall-clock
-        // `completed_unix_ms`. Agents with no completed turn yet sort last. paneID is
-        // the final tiebreak — unique and stable as the agent works — so the list only
-        // reshuffles when an agent is genuinely more recent, never on an unchanged
-        // refresh where every timestamp is equal.
+        // WITHIN a group, latest state change first, as herdr's agent panel sorts
+        // (`state_change_seq` desc). That counter is per server, so across sessions the
+        // wall-clock `status_since_unix_ms` stands in for it, falling back to the last
+        // completed turn on an older server. Agents with neither sort last. The id is
+        // the final tiebreak — unique and stable — so an unchanged refresh never reshuffles.
+        func changed(_ r: AgentRow) -> Int64 {
+            statusAnchorUnixMs(statusSinceUnixMs: r.info.statusSinceUnixMs,
+                               lastCompletedUnixMs: r.info.lastCompletedTurn?.completedUnixMs) ?? Int64.min
+        }
         let ordered = rows.sorted { a, b in
             if a.group != b.group { return a.group < b.group }
-            let ta = a.info.lastCompletedTurn?.completedUnixMs ?? Int64.min
-            let tb = b.info.lastCompletedTurn?.completedUnixMs ?? Int64.min
+            let ta = changed(a), tb = changed(b)
             if ta != tb { return ta > tb }
-            return a.info.paneID < b.info.paneID
+            return a.info.id < b.info.id
         }
         self.rows = ordered
         self.sections = AgentGroup.allCases.compactMap { group in
