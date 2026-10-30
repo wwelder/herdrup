@@ -260,7 +260,7 @@ struct RootView: View {
         guard let client = explicitClient ?? self.client, let token = push.deviceToken else { return }
         let routeCredentials = explicitCredentials ?? credentials
         Task { @MainActor in
-            let capability = await PushCenter.relay.capability(kind: .device, token: token)
+            let capability = await PushCenter.relay?.capability(kind: .device, token: token)
             // Read the prefs AFTER enrolling (which can take up to its timeout), so a toggle
             // flipped meanwhile is not overwritten by this call's older snapshot.
             let p = PushCenter.Prefs.current
@@ -284,7 +284,7 @@ struct RootView: View {
     private func registerActivityPush(with explicitClient: HerdrClient? = nil) {
         guard let client = explicitClient ?? self.client, let token = liveActivity.pushToken else { return }
         Task {
-            let capability = await PushCenter.relay.capability(kind: .activity, token: token)
+            let capability = await PushCenter.relay?.capability(kind: .activity, token: token)
             try? await client.registerActivity(token: token, relayCapability: capability)
         }
     }
@@ -6280,6 +6280,10 @@ struct TerminalPaneContent: View {
     /// The header's ⋯ overflow — the per-agent mute today, and the home for future
     /// per-agent actions. When muted, the button shows a struck bell so the state reads
     /// at a glance without opening the menu.
+    /// An agent from another herdr session (the All view): avatars and push mutes are keyed
+    /// on the connected session's server, so they are not offered for it.
+    private var fromOtherSession: Bool { agent?.session != nil }
+
     private var agentActionsMenu: some View {
         Menu {
             TerminalCopyMenuSection(client: client, paneID: paneID)
@@ -6303,14 +6307,16 @@ struct TerminalPaneContent: View {
                 } label: { Label("Share with someone", systemImage: "person.badge.plus") }
                 .accessibilityIdentifier("terminal-share")
             }
-            if agent != nil, avatars?.canEdit == true {
+            if agent != nil, !fromOtherSession, avatars?.canEdit == true {
                 AgentAvatarMenuButton { editingAvatar = true }
             }
-            Button {
-                mute.toggle(paneID)
-            } label: {
-                Label(mute.isMuted(paneID) ? "Unmute notifications" : "Mute notifications",
-                      systemImage: mute.isMuted(paneID) ? "bell" : "bell.slash")
+            if !fromOtherSession {
+                Button {
+                    mute.toggle(paneID)
+                } label: {
+                    Label(mute.isMuted(paneID) ? "Unmute notifications" : "Mute notifications",
+                          systemImage: mute.isMuted(paneID) ? "bell" : "bell.slash")
+                }
             }
             Button(role: .destructive) {
                 Task {
@@ -6321,7 +6327,7 @@ struct TerminalPaneContent: View {
                 Label("Close agent", systemImage: "xmark.circle")
             }
         } label: {
-            PaneActionsMenuLabel(notificationsOff: mute.isMuted(paneID))
+            PaneActionsMenuLabel(notificationsOff: !fromOtherSession && mute.isMuted(paneID))
         }
         .accessibilityIdentifier("terminal-actions")
         .sheet(isPresented: $editingAvatar) {
@@ -9015,10 +9021,10 @@ struct SettingsView: View {
                         "This machine sends alerts with its own Apple push key.")
             case .unconfigured where status.mode == "direct":
                 return ("bell.slash", Palette.waiting, "This machine can't send notifications yet",
-                        "Herdr is set to push directly but has no Apple push key. Set push.mode to \"auto\" in Herdr's config to use the HerdrUp relay.")
+                        "Herdr is set to push directly but has no Apple push key. Add the Simcast push key to the [push] section of Herdr's config on this machine.")
             case .unconfigured:
                 return ("bell.slash", Palette.waiting, "This machine can't send notifications yet",
-                        "This iPhone hasn't joined the HerdrUp push relay yet. Allow notifications, then reopen HerdrUp while connected.")
+                        "This machine has no Apple push key yet. Add the Simcast push key to the [push] section of Herdr's config on this machine.")
             case .off:
                 return ("bell.slash", Palette.textDim, "Notifications are turned off in Herdr on this machine",
                         "Set push.mode to \"auto\" in Herdr's config on this machine to turn them on.")
