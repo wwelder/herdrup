@@ -2261,7 +2261,9 @@ struct TerminalHomeView: View {
         // displayed. An explicit push should still resolve against that newest data;
         // reading it here does not publish or relayout the roster under the gesture.
         let sourceRoster = afterLoad ? (pendingRoster.snapshot ?? displayedRoster) : displayedRoster
-        let info = sourceRoster.agents.first { $0.paneID == paneID && $0.session == nil }
+        // A push carries the bare pane id (the connected session's); the Live Activity carries
+        // `AgentInfo.id`, session-qualified for another session's agent in the All view.
+        let info = sourceRoster.agents.first { $0.id == paneID }
         // On the onChange path (not post-load), only open once the target RESOLVES against the roster.
         // If it doesn't — an empty roster (first load) OR a stale one (agent spawned from the desktop
         // since the last refresh) — opening now would give a bare paneID title AND a sibling list that
@@ -2275,8 +2277,8 @@ struct TerminalHomeView: View {
         }
         push.pendingPaneID = nil
         let siblings = sourceRoster.agentList.rows.filter(\.isLive).map(\.info)
-        open(PaneSlot(paneID: paneID, title: info?.displayName ?? "agent", agent: info,
-                      initialReply: "", siblings: siblings))
+        open(info.map { paneSlot($0, title: $0.displayName, siblings: siblings) }
+             ?? PaneSlot(paneID: paneID, title: "agent", agent: nil, initialReply: "", siblings: siblings))
     }
 
     /// A tapped gram push selects the Gram tab. Like `applyDeepLink`, it is consumed on
@@ -5936,6 +5938,7 @@ struct TerminalPaneContent: View {
                 // tap enables direct PTY input; the reply bar remains the deliberate
                 // prompt path for agent messages.
                 LiveTerminalView(client: client, paneID: paneID,
+                                 geometryKey: agent?.session.map { "\($0)/\(paneID)" },
                                  onNavigate: onNavigate, isForeground: isForeground,
                                  // Releases the width claim while the scene is in the
                                  // background; cleared with the remount decision below.

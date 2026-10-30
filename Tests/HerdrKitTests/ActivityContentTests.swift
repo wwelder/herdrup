@@ -394,6 +394,11 @@ final class ActivityContentTests: XCTestCase {
         let working = try list([.working])
         XCTAssertNil(working.activityContent.blockedSinceUnixSeconds)
         XCTAssertEqual(working.activityContent.agentID, "p0")
+
+        // Another herdr session's lead (the All view) keeps its session, so a tap opens it there.
+        let other = AgentList(agents: [try agent(pane: "p0", status: "blocked").inSession("top-l")],
+                              livePaneIDs: ["p0"])
+        XCTAssertEqual(other.activityContent.agentID, "top-l/p0")
     }
 
     // MARK: - the residual mutants #207's review left surviving

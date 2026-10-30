@@ -381,7 +381,7 @@ public struct AgentList: Equatable, Sendable {
             totalCount: rows.count,
             workingSinceUnixSeconds: since,
             blockedSinceUnixSeconds: blockedSince,
-            agentID: lead?.info.paneID)
+            agentID: lead?.info.id)
     }
 
     /// THE WORDING SPEC for "N need you", in HerdrKit so every surface can share one rule
