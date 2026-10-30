@@ -20,10 +20,6 @@ final class ChatUXSmokeTests: XCTestCase {
             "HERDR_CHAT_UX_SUBAGENTS": subagents ? "1" : "0"
         ].merging(environment) { _, new in new })
         let agent = app.staticTexts["herdr-app"].firstMatch
-        if !agent.exists {
-            let idle = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Idle")).firstMatch
-            if idle.waitForExistence(timeout: 5) { idle.tap() }
-        }
         XCTAssertTrue(agent.waitForExistence(timeout: 12), app.debugDescription)
         agent.tap()
         XCTAssertTrue(app.descendants(matching: .any)["chat-view"].firstMatch.waitForExistence(timeout: 12), app.debugDescription)

@@ -12,7 +12,7 @@ final class ChatViewTests: XCTestCase {
     /// `HERDR_MOCK_STILL` keeps every agent off "working" and `HERDR_STEADY_CARET` stops the
     /// hidden terminal's caret: a working spinner, a pulse or a blinking caret never lets
     /// XCUITest's idle wait finish (a minute per action). `still: false` keeps the working
-    /// agents (keephair is only listed outside the Idle group while it works).
+    /// agents.
     private func launch(_ mock: String, _ environment: [String: String] = [:], still: Bool = true) -> XCUIApplication {
         var quiet = ["HERDR_STEADY_CARET": "1"]
         if still { quiet["HERDR_MOCK_STILL"] = "1" }
@@ -171,7 +171,7 @@ final class ChatViewTests: XCTestCase {
     /// no pending placeholder left beside it.
     func testSendWithTrailingSpaceReconcilesIntoOneBubble() throws {
         // Answered at launch: a blocked agent's reply goes to its menu as keys, not as a
-        // prompt. Not `still`: an idle herdr-app would sit in the collapsed Idle section.
+        // prompt. Not `still`, so herdr-app keeps its working state.
         let app = launch("chatview", ["HERDR_MOCK_CHAT_ANSWERED": "Yes, merge and deploy"], still: false)
         openAgent("herdr-app", in: app)
         XCTAssertTrue(app.descendants(matching: .any)["chat-view"].firstMatch.waitForExistence(timeout: 10))

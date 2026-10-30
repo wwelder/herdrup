@@ -2079,10 +2079,7 @@ struct TerminalHomeView: View {
     /// Re-entry guard while a `New Terminal` split is in flight (also dims the row).
     @State private var creatingTerminal = false
     private static let maxLivePanes = 3
-    // Only the quiet tail (idle) starts collapsed — the model forbids a
-    // collapsed group from ever hiding something that wants attention.
-    @State private var collapsed: Set<AgentGroup> = Set(AgentGroup.allCases.filter { $0.startsCollapsed })
-    /// The Terminals section starts collapsed like the idle agents — a compact header row
+    /// The Terminals section starts collapsed — a compact header row
     /// (TERMINALS · N) the reader expands on demand, so it never competes with the herd.
     @State private var terminalsCollapsed = true
     /// The Archived section (issue #173) starts collapsed too — archived agents are
@@ -2122,7 +2119,8 @@ struct TerminalHomeView: View {
         case .needsYou, .unrecognised: tone = .waiting
         case .stopped: tone = .died
         case .working: tone = .working
-        case .idle: tone = row.status == .done ? .done : .dim
+        case .done: tone = .done
+        case .idle: tone = .dim
         }
         return .init(id: row.id, text: "\(row.title) › \(subtitle(row.info))", tone: tone)
     }
@@ -2326,17 +2324,11 @@ struct TerminalHomeView: View {
 
     /// The on-screen item directly above the open sidebar row: its bottom separator would
     /// touch the open row's highlight, so it is hidden (Messages does the same). A row is
-    /// identified by its pane ID, a group's disclosure row ("Idle  4 ›") by `disclosureKey`,
-    /// a folder row by `folderKey`.
+    /// identified by its pane ID, a folder row by `folderKey`.
     private func itemAboveOpenRow(_ sections: [AgentFolderLayout.Section]) -> String? {
         guard hSizeClass == .regular, let frontID else { return nil }
         var previous: String?
         for section in sections {
-            let isCollapsed = search.isEmpty && collapsed.contains(section.group)
-            if section.group.startsCollapsed && search.isEmpty {
-                previous = Self.disclosureKey(section.group)
-            }
-            guard !isCollapsed else { continue }
             for item in section.items {
                 switch item {
                 case .agent(let row, _, _):
@@ -2349,8 +2341,6 @@ struct TerminalHomeView: View {
         }
         return nil
     }
-
-    private static func disclosureKey(_ group: AgentGroup) -> String { "disclosure:\(group)" }
 
     /// The iPad (regular-width) layout: a two-column `NavigationSplitView`. Sidebar = the section
     /// pill + the agents list; detail = the selected agent's LIVE TERMINAL (or Gram / Settings for
@@ -4296,35 +4286,20 @@ struct TerminalHomeView: View {
     }
 
     private func sectionView(_ section: AgentFolderLayout.Section, aboveOpen: String?) -> some View {
-        let group = section.group
-        // An active search overrides collapse — a match inside IDLE must not stay
-        // hidden behind a shut section the user did not open.
-        let isCollapsed = search.isEmpty && collapsed.contains(group)
         // Compute the paging list once per section, not inside the per-row button closure
         // (which SwiftUI evaluates eagerly for every row). `orderedSiblings` now filters
         // the cached roster list and performs no sorting.
         let siblings = orderedSiblings
         return VStack(alignment: .leading, spacing: 0) {
-            // #352: no section headers. Needs you, working and stopped rows follow each
-            // other in that order; a collapsible group (Idle) is one plain row at the end
-            // ("Idle  4 ›") that opens its rows underneath. An active search shows the rows
-            // without the disclosure, as before. The count includes the agents in its folders.
-            if group.startsCollapsed && search.isEmpty {
-                disclosureRow(group.sectionTitle.capitalized, count: section.agentCount, open: !isCollapsed,
-                              separator: aboveOpen != Self.disclosureKey(group)) {
-                    if isCollapsed { collapsed.remove(group) } else { collapsed.insert(group) }
-                }
-            }
-
-            if !isCollapsed {
-                ForEach(section.items) { item in
-                    switch item {
-                    case let .agent(row, starred, folderID):
-                        agentRowButton(row, starred: starred, indented: folderID != nil,
-                                       aboveOpen: aboveOpen, siblings: siblings)
-                    case let .folder(summary):
-                        folderRow(summary, aboveOpen: aboveOpen)
-                    }
+            // #352: no section headers, and no folded group: every agent shows, in herdr's
+            // priority order (needs you, done, working, idle; stopped and unrecognised high).
+            ForEach(section.items) { item in
+                switch item {
+                case let .agent(row, starred, folderID):
+                    agentRowButton(row, starred: starred, indented: folderID != nil,
+                                   aboveOpen: aboveOpen, siblings: siblings)
+                case let .folder(summary):
+                    folderRow(summary, aboveOpen: aboveOpen)
                 }
             }
         }
