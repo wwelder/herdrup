@@ -53,8 +53,13 @@ final class PushCenter: ObservableObject {
         Task { _ = await Self.relay?.capability(kind: .device, token: token) }
     }
 
+    /// The herdr session that sent the `pendingPaneID` push; nil for a Live Activity tap or a
+    /// server older than the payload's `session`.
+    var pendingPaneSession: String?
+
     /// A notification was tapped for `paneID` — deep-link to it when the view is ready.
-    func tapped(paneID: String) {
+    func tapped(paneID: String, session: String? = nil) {
+        pendingPaneSession = session
         pendingPaneID = paneID
     }
 

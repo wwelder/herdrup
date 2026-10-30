@@ -2257,13 +2257,18 @@ struct TerminalHomeView: View {
     /// gone (the pane then shows its exited state). Consumes the target so it fires once.
     private func applyDeepLink(afterLoad: Bool = false) {
         guard let paneID = push.pendingPaneID else { return }
+        // A push names the herdr session that sent it. Another session's agent is listed (in
+        // All, turned back on for it) under a session-qualified id, as the Live Activity's
+        // `AgentInfo.id` already is; this session's, or a server too old to say, is bare.
+        let otherSession = push.pendingPaneSession.flatMap { $0 == connectedSessionName ? nil : $0 }
+        if otherSession != nil, !showAllSessions { setShowAllSessions(true) }
+        let target = otherSession.map { "\($0)/\(paneID)" } ?? paneID
         // A refresh completed during momentum scrolling may be buffered rather than
         // displayed. An explicit push should still resolve against that newest data;
         // reading it here does not publish or relayout the roster under the gesture.
-        let sourceRoster = afterLoad ? (pendingRoster.snapshot ?? displayedRoster) : displayedRoster
-        // A push carries the bare pane id (the connected session's); the Live Activity carries
-        // `AgentInfo.id`, session-qualified for another session's agent in the All view.
-        let info = sourceRoster.agents.first { $0.id == paneID }
+        let sourceRoster = afterLoad || otherSession != nil
+            ? (pendingRoster.snapshot ?? displayedRoster) : displayedRoster
+        let info = sourceRoster.agents.first { $0.id == target }
         // On the onChange path (not post-load), only open once the target RESOLVES against the roster.
         // If it doesn't — an empty roster (first load) OR a stale one (agent spawned from the desktop
         // since the last refresh) — opening now would give a bare paneID title AND a sibling list that
@@ -2276,9 +2281,15 @@ struct TerminalHomeView: View {
             return
         }
         push.pendingPaneID = nil
+        push.pendingPaneSession = nil
         let siblings = sourceRoster.agentList.rows.filter(\.isLive).map(\.info)
-        open(info.map { paneSlot($0, title: $0.displayName, siblings: siblings) }
-             ?? PaneSlot(paneID: paneID, title: "agent", agent: nil, initialReply: "", siblings: siblings))
+        if let info {
+            open(paneSlot(info, title: info.displayName, siblings: siblings))
+        } else if otherSession == nil {
+            open(PaneSlot(paneID: paneID, title: "agent", agent: nil, initialReply: "", siblings: siblings))
+        }
+        // Another session's agent that isn't listed has no client here: opening its bare pane id
+        // would front this session's same-id pane instead.
     }
 
     /// A tapped gram push selects the Gram tab. Like `applyDeepLink`, it is consumed on
