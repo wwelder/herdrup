@@ -47,6 +47,8 @@ final class SpeechDictator: ObservableObject {
     /// Seconds a single recognition task runs before we roll it over to a fresh one — under
     /// Apple's ~60s ceiling with margin.
     private let segmentSeconds: TimeInterval = 50
+    /// The agent session's audio out (`start(agent:)`), nil otherwise.
+    private var agentAudio: AsyncStream<Data>.Continuation?
     /// Bumped on every stop/finalize/roll. An in-flight recognition callback captures its
     /// generation and no-ops if it no longer matches, so a stale callback from a retired
     /// task can't touch a newer one.
@@ -93,6 +95,33 @@ final class SpeechDictator: ObservableObject {
                 self.teardown()
                 self.state = .unavailable
                 self.note = "Couldn't start dictation. Try again."
+            }
+        }
+    }
+
+    /// Start talking to the agent instead: the mic goes to `send` as 16 kHz mono s16le
+    /// chunks and the AGENT transcribes (Claude Code's voice, `HerdrClient.streamAgentVoice`),
+    /// so nothing is recognized here and `transcript` stays empty. A failure `send` reports
+    /// while still recording ends the session with its note.
+    func start(agent send: @escaping @MainActor (AsyncStream<Data>) async throws -> Void) {
+        guard state != .requesting, state != .recording else { return }
+        note = nil
+        state = .requesting
+        AVAudioApplication.requestRecordPermission { granted in
+            Task { @MainActor in
+                guard self.state == .requesting else { return }
+                guard granted else {
+                    self.state = .denied
+                    self.note = "To talk to the agent, enable Microphone for herdrup in Settings."
+                    return
+                }
+                do {
+                    try self.beginAgentSession(send)
+                } catch {
+                    self.teardown()
+                    self.state = .unavailable
+                    self.note = "Couldn't start the mic. Try again."
+                }
             }
         }
     }
@@ -219,7 +248,43 @@ final class SpeechDictator: ObservableObject {
         startSegment(recognizer: recognizer)   // box.set ends the rolled request -> it finalizes
     }
 
+    private func beginAgentSession(_ send: @escaping @MainActor (AsyncStream<Data>) async throws -> Void) throws {
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.record, mode: .measurement, options: .duckOthers)
+        try session.setActive(true, options: .notifyOthersOnDeactivation)
+        let input = engine.inputNode
+        let format = input.outputFormat(forBus: 0)
+        guard let pcm = PCM16k(from: format) else { throw CocoaError(.featureUnsupported) }
+        let (audio, continuation) = AsyncStream<Data>.makeStream()
+        agentAudio = continuation
+        let relay = levelRelay
+        input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+            relay.publish(VoiceLevelRelay.rms(of: buffer))
+            if let chunk = pcm.convert(buffer) { continuation.yield(chunk) }
+        }
+        engine.prepare()
+        try engine.start()
+        state = .recording
+        let gen = generation
+        Task { @MainActor in
+            var failure: String?
+            do { try await send(audio) } catch {
+                if case TransportError.machineCommandFailed(let stderr) = error { failure = stderr }
+                else { failure = "Lost the agent's voice channel." }
+            }
+            // Only a session still recording ended on the machine's side; after stop() the
+            // channel closing is expected.
+            guard self.generation == gen, self.state == .recording else { return }
+            self.note = failure
+            self.stop()
+        }
+    }
+
     private func finishAudio() {
+        // The agent's stream ends on a beat of silence, so the last word is never cut.
+        agentAudio?.yield(Data(count: 9_600))
+        agentAudio?.finish()
+        agentAudio = nil
         rollTimer?.invalidate()
         rollTimer = nil
         engine.inputNode.removeTap(onBus: 0)
@@ -308,6 +373,36 @@ enum DictationLocale {
     }
 }
 
+/// Converts the mic's buffers to the 16 kHz mono s16le the agent's voice expects. Used only
+/// on the audio tap's thread.
+private final class PCM16k: @unchecked Sendable {
+    private let converter: AVAudioConverter
+    private let format: AVAudioFormat
+
+    init?(from input: AVAudioFormat) {
+        guard let format = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16_000,
+                                         channels: 1, interleaved: true),
+              let converter = AVAudioConverter(from: input, to: format) else { return nil }
+        self.format = format
+        self.converter = converter
+    }
+
+    func convert(_ buffer: AVAudioPCMBuffer) -> Data? {
+        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * 16_000 / buffer.format.sampleRate) + 32
+        guard let out = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { return nil }
+        var fed = false
+        var error: NSError?
+        converter.convert(to: out, error: &error) { _, status in
+            if fed { status.pointee = .noDataNow; return nil }
+            fed = true
+            status.pointee = .haveData
+            return buffer
+        }
+        guard error == nil, out.frameLength > 0, let samples = out.int16ChannelData else { return nil }
+        return Data(bytes: samples[0], count: Int(out.frameLength) * 2)
+    }
+}
+
 /// Thread-safe holder for the current recognition request. The audio tap (an audio thread)
 /// appends buffers through this while the main actor SWAPS the request on each segment roll.
 /// A single `NSLock` around one reference is enough — append and set never contend for long.
@@ -344,6 +439,9 @@ struct MicButton: View {
     var recording: Binding<Bool>?
     /// Called when a dictation session begins — e.g. to disarm a pending ctrl chord.
     var onStart: () -> Void = {}
+    /// Set for an agent with its own voice mode: the mic streams to it and the agent
+    /// transcribes into its prompt (`SpeechDictator.start(agent:)`); the field is untouched.
+    var agentVoice: (@MainActor (AsyncStream<Data>) async throws -> Void)?
 
     @Environment(\.scenePhase) private var scenePhase
     /// The enclosing composer's level meter, when there is one; it drives the waveform
@@ -363,7 +461,7 @@ struct MicButton: View {
                 onStart()
                 let meter = meter
                 dictator.levelHandler = { level in meter?.push(level) }
-                dictator.start()
+                if let agentVoice { dictator.start(agent: agentVoice) } else { dictator.start() }
             }
         } label: {
             ZStack {

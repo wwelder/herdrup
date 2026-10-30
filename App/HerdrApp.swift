@@ -5862,6 +5862,16 @@ struct TerminalPaneContent: View {
     // owns delivery then). A pending pre-fill does NOT disable the button once the
     // loop stops — instead the button ROUTES a pre-fill through the prompt-only
     // path (see the replyBar action), so it can never fall to rawKeys send_text.
+    /// Claude Code's own voice for this pane (`HerdrClient.streamAgentVoice`): the mic
+    /// streams there and Claude transcribes into its prompt, for Return to send. nil hides
+    /// the mic: other agents have no dictation mode to feed (Codex's voice is a spoken
+    /// conversation, omp has none), and a federated pane is on another machine.
+    private var agentVoice: (@MainActor (AsyncStream<Data>) async throws -> Void)? {
+        guard agent?.agent?.lowercased() == "claude", client.canStreamAgentVoice(pane: paneID) else { return nil }
+        let client = client, pane = paneID
+        return { audio in try await client.streamAgentVoice(pane: pane, audio: audio) }
+    }
+
     private var hasReplyContent: Bool {
         !replyAttachments.isEmpty || !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -6712,11 +6722,13 @@ struct TerminalPaneContent: View {
                 ComposerAttachButton(busy: loadingReplyAttachment) { openReplyAttachSheet() }
                     .disabled(sending || autoDelivering || loadingReplyAttachment)
                     .accessibilityIdentifier("terminal-attach-button")
-                MicButton(text: $reply,
-                          isActive: isForeground && !autoDelivering, recording: $replyDictating,
-                          onStart: { ctrlArmed = false })
-                    .fixedSize()
-                    .disabled(sending || autoDelivering)
+                if let agentVoice {
+                    MicButton(text: $reply,
+                              isActive: isForeground && !autoDelivering, recording: $replyDictating,
+                              onStart: { ctrlArmed = false }, agentVoice: agentVoice)
+                        .fixedSize()
+                        .disabled(sending || autoDelivering)
+                }
                 if !hasReplyContent {
                     SavedPromptsMenu(onSelect: usePrompt)
                         .disabled(sending || autoDelivering || replyDictating)
