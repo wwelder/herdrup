@@ -448,7 +448,7 @@ private extension AgentActivityState {
     var markColor: Color { WidgetPalette.color(status) }
 
 
-    var deepLinkURL: URL { AgentActivityDeepLink.url(agentID: agentID) }
+    var deepLinkURL: URL { AgentActivityDeepLink.url(agentID: agentID, session: session) }
 }
 
 private extension Int {

@@ -61,6 +61,9 @@ struct AgentActivityState: Codable, Hashable {
     var defaultAnswer: String?
     /// Stable pane identifier used by the activity's deep link.
     var agentID: String?
+    /// The herdr session `agentID` lives in, when herdr pushed it: after its machine-wide
+    /// merge the lead may be in a session the app is not on. Nil means the app's own.
+    var session: String?
     /// When this snapshot was produced (Unix seconds), for honest stale-state copy.
     var updatedAt: Double?
     /// The machine's tool calls per minute over the last five minutes, as the wezterm status
@@ -95,6 +98,7 @@ struct AgentActivityState: Codable, Hashable {
         question = try c.decodeIfPresent(String.self, forKey: .question)
         defaultAnswer = try c.decodeIfPresent(String.self, forKey: .defaultAnswer)
         agentID = try c.decodeIfPresent(String.self, forKey: .agentID)
+        session = try c.decodeIfPresent(String.self, forKey: .session)
         updatedAt = try c.decodeIfPresent(Double.self, forKey: .updatedAt)
         apm = try c.decodeIfPresent(Double.self, forKey: .apm)
     }
@@ -104,7 +108,7 @@ struct AgentActivityState: Codable, Hashable {
     init(headline: String, status: AgentActivityStatus, needsYouCount: Int, unconfirmedCount: Int = 0,
          workingCount: Int, totalCount: Int, workingSince: Double?, blockedSince: Double? = nil,
          question: String? = nil, defaultAnswer: String? = nil, agentID: String? = nil,
-         updatedAt: Double? = nil, apm: Double? = nil) {
+         session: String? = nil, updatedAt: Double? = nil, apm: Double? = nil) {
         self.headline = headline
         self.status = status
         self.needsYouCount = needsYouCount
@@ -116,6 +120,7 @@ struct AgentActivityState: Codable, Hashable {
         self.question = question
         self.defaultAnswer = defaultAnswer
         self.agentID = agentID
+        self.session = session
         self.updatedAt = updatedAt
         self.apm = apm
     }

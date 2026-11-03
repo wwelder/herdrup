@@ -29,6 +29,15 @@ final class WidgetDataTests: XCTestCase {
         XCTAssertEqual(providerUsage(accounts: accounts), [])
     }
 
+    func testTheLiveActivityAsksOnlyWhileTheLeadNeedsYou() throws {
+        func list(_ status: String) throws -> AgentList {
+            let json = #"{"pane_id":"w1:p1","agent":"claude","agent_status":"\#(status)","pending_request":"Proceed?"}"#
+            return AgentList(agents: [try JSONDecoder().decode(AgentInfo.self, from: Data(json.utf8))], livePaneIDs: ["w1:p1"])
+        }
+        XCTAssertEqual(try list("blocked").activityContent.question, "Proceed?")
+        XCTAssertNil(try list("working").activityContent.question)
+    }
+
     func testPendingRequestDecodes() throws {
         let json = #"{"pane_id":"w1:p1","agent_status":"blocked","pending_request":"Bash command\ngit push\nDo you want to proceed?"}"#
         let info = try JSONDecoder().decode(AgentInfo.self, from: Data(json.utf8))

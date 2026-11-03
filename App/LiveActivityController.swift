@@ -240,6 +240,7 @@ final class LiveActivityController: ObservableObject {
             totalCount: c.totalCount,
             workingSince: c.workingSinceUnixSeconds,
             blockedSince: c.blockedSinceUnixSeconds,
+            question: c.question,
             agentID: c.agentID,
             updatedAt: Date().timeIntervalSince1970
         )

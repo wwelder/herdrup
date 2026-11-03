@@ -33,6 +33,10 @@ final class AgentActivityStateTests: XCTestCase {
         XCTAssertNil(s.apm)
         XCTAssertEqual(try decode(#"{"headline":"h","status":"idle","needsYouCount":0,"workingCount":0,"totalCount":1,"apm":4.6}"#).apm, 4.6,
                        "herdr's push carries the host APM")
+        let pushed = try decode(#"{"headline":"h","status":"needsYou","needsYouCount":1,"workingCount":0,"totalCount":1,"agentID":"w1-2","session":"bot-r"}"#)
+        XCTAssertNil(s.session)
+        XCTAssertEqual(AgentActivityDeepLink.session(from: AgentActivityDeepLink.url(agentID: pushed.agentID, session: pushed.session)),
+                       "bot-r", "a tap on herdr's merged activity opens the lead's own session")
     }
 
     /// The tolerance is scoped to documented additive metadata. A genuinely malformed

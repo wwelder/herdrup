@@ -333,6 +333,8 @@ public struct AgentList: Equatable, Sendable {
         public let workingSinceUnixSeconds: Double?
         public let blockedSinceUnixSeconds: Double?
         public let agentID: String?
+        /// What the lead is asking (herdr's `pending_request`), only while it needs you.
+        public let question: String?
     }
 
     /// THE ATTENTION COUNTS DIVERGE FROM THE ROSTER'S ON PURPOSE, and this is the reason.
@@ -381,7 +383,8 @@ public struct AgentList: Equatable, Sendable {
             totalCount: rows.count,
             workingSinceUnixSeconds: since,
             blockedSinceUnixSeconds: blockedSince,
-            agentID: lead?.info.id)
+            agentID: lead?.info.id,
+            question: word == "needsYou" ? lead?.info.pendingRequest : nil)
     }
 
     /// THE WORDING SPEC for "N need you", in HerdrKit so every surface can share one rule
