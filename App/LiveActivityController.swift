@@ -181,6 +181,9 @@ final class LiveActivityController: ObservableObject {
             if let hostLabel { start(hostLabel: hostLabel, state: state) }
             return
         }
+        // Only herdr's push measures APM, so the app's own roster updates keep its last one.
+        var state = state
+        if state.apm == nil { state.apm = activity.content.state.apm }
         // staleDate nil for the same reason as in `start`: nothing re-pushes on a cadence,
         // so an elapsed window would mean "the roster did not change", not "the host is gone".
         Task { await activity.update(ActivityContent(state: state, staleDate: nil)) }

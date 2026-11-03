@@ -63,6 +63,9 @@ struct AgentActivityState: Codable, Hashable {
     var agentID: String?
     /// When this snapshot was produced (Unix seconds), for honest stale-state copy.
     var updatedAt: Double?
+    /// The machine's tool calls per minute over the last five minutes, as the wezterm status
+    /// bar shows it. Only herdr's push measures it; nil until a push carries it.
+    var apm: Double?
 
     /// Hand-written because additive metadata and enum cases must not make an existing
     /// Live Activity undecodable. ActivityKit drops an undecodable activity, so it could
@@ -93,6 +96,7 @@ struct AgentActivityState: Codable, Hashable {
         defaultAnswer = try c.decodeIfPresent(String.self, forKey: .defaultAnswer)
         agentID = try c.decodeIfPresent(String.self, forKey: .agentID)
         updatedAt = try c.decodeIfPresent(Double.self, forKey: .updatedAt)
+        apm = try c.decodeIfPresent(Double.self, forKey: .apm)
     }
 
     /// Restored because writing `init(from:)` suppresses the synthesized memberwise
@@ -100,7 +104,7 @@ struct AgentActivityState: Codable, Hashable {
     init(headline: String, status: AgentActivityStatus, needsYouCount: Int, unconfirmedCount: Int = 0,
          workingCount: Int, totalCount: Int, workingSince: Double?, blockedSince: Double? = nil,
          question: String? = nil, defaultAnswer: String? = nil, agentID: String? = nil,
-         updatedAt: Double? = nil) {
+         updatedAt: Double? = nil, apm: Double? = nil) {
         self.headline = headline
         self.status = status
         self.needsYouCount = needsYouCount
@@ -113,6 +117,7 @@ struct AgentActivityState: Codable, Hashable {
         self.defaultAnswer = defaultAnswer
         self.agentID = agentID
         self.updatedAt = updatedAt
+        self.apm = apm
     }
 
     /// Whether the status mark should render HOLLOW: every waiting agent rests on a state
@@ -138,11 +143,34 @@ struct AgentActivityState: Codable, Hashable {
     /// `stale-date`. So the hedged headline, the hollow mark and the "no recent update"
     /// line rendered in tests and never on a device. They are gone rather than kept as
     /// scenery; if a real liveness signal ever lands, restore them WITH it.
+    ///
+    /// With nothing waiting, the headline is the machine's metrics rather than the
+    /// owner's rejected "Nothing needs you".
     var presentationHeadline: String {
-        if needsYouCount == 0, totalCount > 0, status == .idle || status == .working {
-            return "Nothing needs you"
-        }
+        if showsMetricsHeadline { return metricsLine }
         return headline
+    }
+
+    var showsMetricsHeadline: Bool {
+        needsYouCount == 0 && totalCount > 0 && (status == .idle || status == .working)
+    }
+
+    /// "APM:3.2 Running:4 Blocked:0", the owner's wording; APM drops out until herdr has
+    /// pushed one.
+    var metricsLine: String {
+        let counts = "Running:\(workingCount) Blocked:\(needsYouCount)"
+        guard let apmText else { return counts }
+        return "APM:\(apmText) \(counts)"
+    }
+
+    /// The faint line under the headline: the metrics, unless the headline already is them.
+    var fleetLine: String {
+        showsMetricsHeadline ? "\(totalCount) agents" : metricsLine
+    }
+
+    var apmText: String? {
+        guard let apm, apm.isFinite, apm >= 0 else { return nil }
+        return apm < 100 ? String(format: "%.1f", apm) : String(Int(apm.rounded()))
     }
 }
 

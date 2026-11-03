@@ -30,6 +30,9 @@ final class AgentActivityStateTests: XCTestCase {
         XCTAssertNil(s.defaultAnswer)
         XCTAssertNil(s.agentID)
         XCTAssertNil(s.updatedAt)
+        XCTAssertNil(s.apm)
+        XCTAssertEqual(try decode(#"{"headline":"h","status":"idle","needsYouCount":0,"workingCount":0,"totalCount":1,"apm":4.6}"#).apm, 4.6,
+                       "herdr's push carries the host APM")
     }
 
     /// The tolerance is scoped to documented additive metadata. A genuinely malformed
@@ -170,7 +173,13 @@ final class AgentActivityStateTests: XCTestCase {
         var state = AgentActivityState(
             headline: "index-rebuild", status: .working, needsYouCount: 0,
             workingCount: 7, totalCount: 31, workingSince: nil)
-        XCTAssertEqual(state.presentationHeadline, "Nothing needs you")
+        XCTAssertEqual(state.presentationHeadline, "Running:7 Blocked:0",
+                       "no APM until herdr pushes one")
+        XCTAssertEqual(state.fleetLine, "31 agents", "the headline already carries the metrics")
+        state.apm = 3.2
+        XCTAssertEqual(state.presentationHeadline, "APM:3.2 Running:7 Blocked:0")
+        state.apm = 123.4
+        XCTAssertEqual(state.apmText, "123")
 
         state.status = .stopped
         state.headline = "crashed-build"
@@ -188,7 +197,8 @@ final class AgentActivityStateTests: XCTestCase {
     func testDemandKeepsTheAgentNameAsTheHeadline() {
         let state = AgentActivityState(
             headline: "prod-deploy", status: .needsYou, needsYouCount: 23,
-            workingCount: 7, totalCount: 31, workingSince: nil)
+            workingCount: 7, totalCount: 31, workingSince: nil, apm: 2)
         XCTAssertEqual(state.presentationHeadline, "prod-deploy")
+        XCTAssertEqual(state.fleetLine, "APM:2.0 Running:7 Blocked:23")
     }
 }

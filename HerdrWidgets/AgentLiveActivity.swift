@@ -41,11 +41,7 @@ struct AgentLiveActivity: Widget {
                     )
                 }
             } compactLeading: {
-                StatusMark(
-                    status: context.state.status,
-                    diameter: 10,
-                    isUnconfirmed: context.state.markIsUnconfirmed
-                )
+                CompactAPM(state: context.state)
             } compactTrailing: {
                 CompactCount(state: context.state)
             } minimal: {
@@ -62,22 +58,33 @@ struct AgentLiveActivity: Widget {
     }
 }
 
-private struct CompactCount: View {
+/// The owner's compact island: APM on the left, and on the right the running count, or
+/// the blocked count once anything is blocked. Both turn amber while anything is blocked.
+private struct CompactAPM: View {
     let state: AgentActivityAttributes.ContentState
 
     @ViewBuilder
     var body: some View {
-        if state.needsYouCount > 0 {
-            Text(state.needsYouCount.compactCount)
+        if let apm = state.apmText {
+            Text(verbatim: apm)
                 .font(WidgetFont.plexSemiBold(13))
                 .monospacedDigit()
-                .foregroundStyle(WidgetPalette.waiting)
-        } else if state.workingCount > 0 {
-            Text(state.workingCount.compactCount)
-                .font(WidgetFont.plexMedium(13))
-                .monospacedDigit()
-                .foregroundStyle(WidgetPalette.working)
+                .foregroundStyle(WidgetPalette.fleet(state))
+        } else {
+            // An older herdr pushes no APM; keep the mark rather than an empty corner.
+            StatusMark(status: state.status, diameter: 10, isUnconfirmed: state.markIsUnconfirmed)
         }
+    }
+}
+
+private struct CompactCount: View {
+    let state: AgentActivityAttributes.ContentState
+
+    var body: some View {
+        Text(verbatim: (state.needsYouCount > 0 ? state.needsYouCount : state.workingCount).compactCount)
+            .font(WidgetFont.plexSemiBold(13))
+            .monospacedDigit()
+            .foregroundStyle(WidgetPalette.fleet(state))
     }
 }
 
@@ -193,7 +200,7 @@ private struct ExpandedBody: View {
                     .monospacedDigit()
                 Text("·")
             }
-            Text("\(state.workingCount) working · \(state.totalCount) agents")
+            Text(state.fleetLine)
         }
         .font(WidgetFont.plex(11))
         .foregroundStyle(WidgetPalette.islandTextFaint)
@@ -312,7 +319,7 @@ private struct LockScreenView: View {
     }
 
     private var lockDetail: some View {
-        Text("\(hostLabel) · \(state.workingCount) working · \(state.totalCount) agents")
+        Text("\(hostLabel) · \(state.fleetLine)")
             .font(WidgetFont.plex(11))
             .foregroundStyle(tertiaryInk)
             .lineLimit(1)
@@ -418,6 +425,11 @@ private enum WidgetPalette {
     static let died = Color(hex6: 0xE2584E)
     static let working = Color(hex6: 0x5B9BE8)
 
+    /// Amber while anything is blocked, blue while anything runs, faint otherwise.
+    static func fleet(_ state: AgentActivityAttributes.ContentState) -> Color {
+        state.needsYouCount > 0 ? waiting : state.workingCount > 0 ? working : textFaint
+    }
+
     static func color(_ status: AgentActivityAttributes.Status) -> Color {
         switch status {
         case .needsYou: return waiting
@@ -495,7 +507,7 @@ struct WidgetGallery: View {
             headline: "index-rebuild", status: .working, needsYouCount: 0,
             workingCount: 1, totalCount: 12,
             workingSince: Date().addingTimeInterval(-903).timeIntervalSince1970,
-            agentID: "a3")),
+            agentID: "a3", apm: 3.2)),
         ("stopped", AgentActivityState(
             headline: "flaky-e2e", status: .stopped, needsYouCount: 0,
             workingCount: 0, totalCount: 5, workingSince: nil, agentID: "a4")),
@@ -504,7 +516,7 @@ struct WidgetGallery: View {
             workingCount: 0, totalCount: 31, workingSince: nil, agentID: "a6")),
         ("working · many", AgentActivityState(
             headline: "index-rebuild", status: .working, needsYouCount: 0,
-            workingCount: 7, totalCount: 31, workingSince: nil, agentID: "a8")),
+            workingCount: 7, totalCount: 31, workingSince: nil, agentID: "a8", apm: 14.6)),
         ("needsYou · unconfirmed", AgentActivityState(
             headline: "remote-build", status: .needsYou, needsYouCount: 3,
             unconfirmedCount: 3, workingCount: 0, totalCount: 3, workingSince: nil,
@@ -601,11 +613,7 @@ struct WidgetGallery: View {
                 .foregroundStyle(.secondary)
             HStack(spacing: 16) {
                 HStack(spacing: 8) {
-                    StatusMark(
-                        status: item.1.status,
-                        diameter: 10,
-                        isUnconfirmed: item.1.markIsUnconfirmed
-                    )
+                    CompactAPM(state: item.1)
                     CompactCount(state: item.1)
                 }
                 .padding(.horizontal, 14)
