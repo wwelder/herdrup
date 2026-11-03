@@ -69,6 +69,12 @@ final class LiveActivityController: ObservableObject {
     /// resurrecting its banner.
     private var hostLabel: String?
 
+    /// The host APM herdr last pushed to the activity, for the home-screen widgets.
+    var apm: Double? { liveActivity?.content.state.apm }
+
+    /// The host label of the current session, for the home-screen widgets.
+    var currentHostLabel: String? { hostLabel }
+
     /// Whether the system currently permits Live Activities (user toggle + capability).
     private var enabled: Bool { ActivityAuthorizationInfo().areActivitiesEnabled }
 

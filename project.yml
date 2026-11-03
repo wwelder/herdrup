@@ -382,6 +382,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: inc.simcast.herdrup.widgets
+        # The App Group the home-screen widgets read their snapshot from.
+        CODE_SIGN_ENTITLEMENTS: HerdrWidgets/HerdrWidgets.entitlements
         MARKETING_VERSION: "1.2.1"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.9"
@@ -411,8 +413,12 @@ targets:
     sources:
       - path: HerdrNotificationService
       - path: AskPush/AskPush.swift
+      # An agent alert updates the home-screen widgets' snapshot while the app is closed.
+      - path: Shared/AgentActivityState.swift
+      - path: Shared/WidgetSnapshot.swift
     dependencies:
       - sdk: UserNotifications.framework
+      - sdk: WidgetKit.framework
     info:
       path: HerdrNotificationService/Info.plist
       properties:
@@ -425,6 +431,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: inc.simcast.herdrup.notificationservice
+        CODE_SIGN_ENTITLEMENTS: HerdrNotificationService/HerdrNotificationService.entitlements
         # Bump with the app's and the widget's: an extension's version must match its app's.
         MARKETING_VERSION: "1.2.1"
         CURRENT_PROJECT_VERSION: "1"

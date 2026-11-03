@@ -399,7 +399,7 @@ private struct StatusMark: View {
     }
 }
 
-private enum WidgetFont {
+enum WidgetFont {
     static func geist(_ size: CGFloat) -> Font { .custom("Geist-Regular", fixedSize: size) }
     static func geistSemiBold(_ size: CGFloat) -> Font { .custom("Geist-SemiBold", fixedSize: size) }
     static func plex(_ size: CGFloat) -> Font { .custom("IBMPlexMono", fixedSize: size) }
@@ -407,7 +407,7 @@ private enum WidgetFont {
     static func plexSemiBold(_ size: CGFloat) -> Font { .custom("IBMPlexMono-SmBld", fixedSize: size) }
 }
 
-private enum WidgetPalette {
+enum WidgetPalette {
     static let ground = Color(hex6: 0x13162A)
     // Keep the original top and lighten the formerly near-black bottom.
     static let cardBottom = Color(hex6: 0x171B30)
@@ -455,7 +455,7 @@ private extension Int {
     var compactCount: String { self >= 100 ? "99+" : String(self) }
 }
 
-private extension Color {
+extension Color {
     init(hex6: UInt32) {
         self.init(
             .sRGB,

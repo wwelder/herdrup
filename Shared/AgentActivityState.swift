@@ -168,7 +168,10 @@ struct AgentActivityState: Codable, Hashable {
         showsMetricsHeadline ? "\(totalCount) agents" : metricsLine
     }
 
-    var apmText: String? {
+    var apmText: String? { Self.apmText(apm) }
+
+    /// One decimal below 100, whole above; nil when unknown. The home-screen widget uses it too.
+    static func apmText(_ apm: Double?) -> String? {
         guard let apm, apm.isFinite, apm >= 0 else { return nil }
         return apm < 100 ? String(format: "%.1f", apm) : String(Int(apm.rounded()))
     }
@@ -177,13 +180,24 @@ struct AgentActivityState: Codable, Hashable {
 enum AgentActivityDeepLink {
     private static let fallback = URL(string: "herdrup://agents")!
 
-    static func url(agentID: String?) -> URL {
+    /// `session` names the herdr session the pane lives in (pane ids repeat across
+    /// sessions); nil is whichever session the app is on.
+    static func url(agentID: String?, session: String? = nil) -> URL {
         guard let agentID, !agentID.isEmpty else { return fallback }
         var components = URLComponents()
         components.scheme = "herdrup"
         components.host = "agent"
         components.path = "/\(agentID)"
+        if let session, !session.isEmpty {
+            components.queryItems = [URLQueryItem(name: "session", value: session)]
+        }
         return components.url ?? fallback
+    }
+
+    static func session(from url: URL) -> String? {
+        URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?.first { $0.name == "session" }?.value
+            .flatMap { $0.isEmpty ? nil : $0 }
     }
 
     static func agentID(from url: URL) -> String? {

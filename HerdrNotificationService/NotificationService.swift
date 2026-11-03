@@ -1,4 +1,5 @@
 import UserNotifications
+import WidgetKit
 
 /// Gives an omp question push (#483) its answer buttons. iOS runs this for every push with
 /// `mutable-content`; only one carrying an owner's answerable `herdr_ask` is changed, and
@@ -19,6 +20,12 @@ final class NotificationService: UNNotificationServiceExtension {
                              withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void) {
         self.contentHandler = contentHandler
         original = request.content
+        // Any agent alert, answerable or not, moves the home-screen widgets' waiting agent.
+        if let next = WidgetSnapshot.applying(alert: request.content.userInfo,
+                                              to: WidgetSnapshot.load(), now: Date()) {
+            next.save()
+            WidgetCenter.shared.reloadAllTimelines()
+        }
         guard let ask = AskPush(userInfo: request.content.userInfo),
               let content = request.content.mutableCopy() as? UNMutableNotificationContent else {
             contentHandler(request.content)

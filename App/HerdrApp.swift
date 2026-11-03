@@ -40,8 +40,9 @@ struct HerdrApp: App {
                         GuestInviteRouter.shared.open(url.absoluteString)
                         return
                     }
+                    // A Live Activity or home-screen widget tap; the widget names the session.
                     guard let paneID = AgentActivityDeepLink.agentID(from: url) else { return }
-                    PushCenter.shared.tapped(paneID: paneID)
+                    PushCenter.shared.tapped(paneID: paneID, session: AgentActivityDeepLink.session(from: url))
                 }
         }
     }
@@ -3237,6 +3238,8 @@ struct TerminalHomeView: View {
                 LiveActivityController.shared.recoverIfEnded(
                     LiveActivityController.state(from: fullList)
                 )
+                // Also every poll: accounts' usage moves without the roster moving.
+                syncWidgets()
             }
         }
         // The roster menus' daemon actions, on the current client (see `menuAction`).
@@ -3282,6 +3285,7 @@ struct TerminalHomeView: View {
         // user has Live Activities off — the controller guards that.
         .onChange(of: fullList, initial: true) { _, list in
             LiveActivityController.shared.update(LiveActivityController.state(from: list))
+            syncWidgets()
         }
         // If the daemon lacks the fork features, surface the advisory notice. Only a
         // DEFINITIVE not-fork flips it — network/other errors stay quiet (see
@@ -3670,6 +3674,13 @@ struct TerminalHomeView: View {
     /// Whether `listed` is the session this home is connected to (nil = default).
     private func isConnectedSession(_ listed: HerdrSession) -> Bool {
         listed.default ? (session ?? "default") == "default" : listed.name == session
+    }
+
+    /// Hand the home-screen widgets what this home sees (WidgetSync skips unchanged snapshots).
+    private func syncWidgets() {
+        WidgetSync.update(host: LiveActivityController.shared.currentHostLabel ?? hostKey,
+                          session: connectedSessionName, list: fullList, accounts: accounts,
+                          apm: LiveActivityController.shared.apm)
     }
 
     /// The connected session's name as the pills show it.

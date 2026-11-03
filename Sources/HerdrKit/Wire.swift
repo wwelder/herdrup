@@ -363,6 +363,9 @@ public struct AgentInfo: Decodable, Equatable, Sendable, Identifiable {
     /// device and every guest of the agent. Absent means the agent's initial tile. Decoded
     /// leniently (`AgentAvatarDescriptor` never throws), so an odd value cannot fail the list.
     public let avatar: AgentAvatarDescriptor?
+    /// What a blocked agent is asking, read by herdr off its screen (the lines above its
+    /// numbered menu). Absent when nothing is pending and on an older server.
+    public let pendingRequest: String?
     /// The herdr session this row was listed from, when the app shows several sessions at
     /// once; nil is the session the app is connected to. Set by the app, never decoded.
     public internal(set) var session: String? = nil
@@ -471,6 +474,7 @@ public struct AgentInfo: Decodable, Equatable, Sendable, Identifiable {
         case accountUnresolved = "account_unresolved"
         case sessionTransfer = "session_transfer"
         case guestRunning = "guest_running"
+        case pendingRequest = "pending_request"
     }
 }
 

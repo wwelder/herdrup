@@ -591,6 +591,30 @@ private let isoResetParser: ISO8601DateFormatter = {
     return f
 }()
 
+/// What is left of one provider's rate limits, for the home-screen widgets.
+public struct ProviderUsage: Equatable, Sendable {
+    public let provider: String
+    public let remainingPercent: Double
+    /// The window that will stop the account first, e.g. "5h" or "weekly".
+    public let window: String
+    public let resetsAt: Date?
+}
+
+/// Claude's then Codex's remaining usage: each provider's active account (or its first),
+/// measured by its tightest window. A provider with no account or no usage is left out.
+public func providerUsage(accounts: [CredentialAccount]) -> [ProviderUsage] {
+    ["claude", "codex"].compactMap { kind in
+        let mine = accounts.filter { $0.kind == kind }
+        guard let account = mine.first(where: \.active) ?? mine.first,
+              let tightest = account.usage?.effectiveWindows
+                .compactMap({ window in window.usedPercent.map { (window, $0) } })
+                .max(by: { $0.1 < $1.1 })
+        else { return nil }
+        return ProviderUsage(provider: kind, remainingPercent: min(100, max(0, 100 - tightest.1)),
+                             window: tightest.0.label, resetsAt: parseResetInstant(tightest.0.resetsAt))
+    }
+}
+
 /// The reset token shown beside a usage bar: how much is left when the reset is near,
 /// the calendar date when it is not.
 ///
