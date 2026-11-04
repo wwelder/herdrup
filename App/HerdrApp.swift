@@ -267,7 +267,7 @@ struct RootView: View {
             let p = PushCenter.Prefs.current
             let muted = Array(MuteStore.shared.mutedPanes)
             do {
-                try await client.registerDevice(token: token, needsInput: p.needsInput, dies: p.dies, finishes: p.finishes, gram: false, mutedPanes: muted, relayCapability: capability)
+                try await client.registerDevice(token: token, needsInput: p.needsInput, dies: p.dies, finishes: p.finishes, gram: p.gram, mutedPanes: muted, relayCapability: capability)
             } catch {
                 return
             }
@@ -1877,7 +1877,18 @@ struct TerminalHomeView: View {
     /// The selected bottom tab (Agents / Gram / Settings). Terminal is NOT a tab — it
     /// fronts a keep-mounted pane OVER the tabs (see PaneKeepAliveContainer). Gram and
     /// Settings were modal covers before #88; they are persistent tabs now.
-    @State private var selectedTab: HomeTab = .agents
+    @State private var selectedTab: HomeTab = TerminalHomeView.initialTab
+    /// The fronted pane was opened from a Gram entry: closing it goes back to Gram, the
+    /// window the owner reads, rather than leaving them on the agents list.
+    @State private var paneOpenedFromGram = false
+
+    /// Gram, the owner's inbox. The mocked UI tests drive the agents list, so they start there.
+    private static var initialTab: HomeTab {
+        #if DEBUG
+        if ScreenshotMock.mode != nil { return .agents }
+        #endif
+        return .gram
+    }
     /// On iPad (regular width) the app becomes a NavigationSplitView (sidebar + detail);
     /// on iPhone / narrow it stays the tab bar + terminal-over layout. Same views either way.
     @Environment(\.horizontalSizeClass) private var hSizeClass
@@ -2023,11 +2034,10 @@ struct TerminalHomeView: View {
     ///
     /// ONE definition of the sections (#360): the iPhone `TabView`, the iPad/Mac sidebar
     /// bar and the minimised rail all read label and icon from here, so they cannot drift.
-    private enum HomeTab: Hashable, CaseIterable {
-        case agents, gram, settings
-
-        // ponytail: Gram is hidden for now (owner call); the code stays so it can come back.
-        static var allCases: [HomeTab] { [.agents, .settings] }
+    private enum HomeTab: String, Hashable, CaseIterable {
+        /// Gram first: it is the owner's clean inbox (herdr writes every blocked question,
+        /// recap and exit there), and the agents list is the raw view behind it.
+        case gram, agents, settings
 
         var label: String {
             switch self {
@@ -2160,6 +2170,7 @@ struct TerminalHomeView: View {
         // declared, so a pane opened from a push deep-link while Gram/Settings is showing
         // would otherwise leave the tab bar drawing over it. Selecting Agents keeps every
         // open path (row tap, deep-link, spawn, swipe-paging) consistent.
+        if selectedTab == .gram { paneOpenedFromGram = true }
         selectedTab = .agents
         frontID = slot.id
     }
@@ -2295,8 +2306,21 @@ struct TerminalHomeView: View {
     /// the onChange path (app already up) AND post-load (a cold-launch tap set the flag
     /// before this view existed). Leaving it armed lets a later trigger re-invoke it.
     private func openGramIfPending() {
-        // Gram is hidden (see HomeTab.allCases): drop the tap instead of opening it.
-        if push.pendingGram { push.pendingGram = false }
+        guard push.pendingGram else { return }
+        // The fork notice (a fullScreenCover) is up: don't switch under it; its
+        // onDismiss re-invokes this once it's gone.
+        if showForkNotice { return }
+        // A modal sheet is up, OR a spawned pane is queued to open: DEFER, do not
+        // consume. Consuming here would dismiss the sheet out from under the user (e.g.
+        // mid new-agent entry) and swallow the tap. Leave the push armed; the sheet's
+        // onDismiss re-invokes this once it's gone (and a queued spawn wins there,
+        // deliberately leaving the push pending rather than yanking the new terminal).
+        if activeCover != nil || pendingOpenSlot != nil { return }
+        push.pendingGram = false
+        // Drop any fronted terminal so the Gram tab is visible (the pane stays MOUNTED,
+        // so reopening it later is instant).
+        frontID = nil
+        selectedTab = .gram
     }
 
     /// Swipe-page from the fronted pane to its prev/next sibling (clamped). `open()`s the
@@ -3124,6 +3148,15 @@ struct TerminalHomeView: View {
             // standard bar below that) replaces the old hand-built pill (#88). Terminal
             // is NOT a tab — it fronts a keep-mounted pane over everything (below).
             TabView(selection: tabSelection) {
+                // Gram and Settings were modal covers; they are persistent tabs now.
+                // Both are nav-agnostic and take no onClose as tabs (no close button).
+                GramView(client: client, unread: gramUnread,
+                         showingSaved: $gramShowingSaved,
+                         newestToken: gramNewestToken)
+                    .tag(HomeTab.gram)
+                    .tabItem { Label(HomeTab.gram.label, systemImage: HomeTab.gram.icon) }
+                    .modifier(GramUnreadBadge(unread: gramUnread))
+
                 agentsTab
                     .tag(HomeTab.agents)
                     .tabItem { Label(HomeTab.agents.label, systemImage: HomeTab.agents.icon) }
@@ -3266,8 +3299,7 @@ struct TerminalHomeView: View {
         // writes the count on load / mark-read. Keyed on selectedTab so it
         // restarts on tab change and idles on Gram: exactly one poller is live.
         .task(id: selectedTab) {
-            // Gram is hidden (see HomeTab.allCases), so nothing reads the unread count.
-            guard selectedTab == .gram else { return }
+            guard selectedTab != .gram else { return }
             while !Task.isCancelled {
                 // Unconditional on purpose: `unread_only` is a small answer already,
                 // and this poller keeps no list to compare a digest against. The count is
@@ -3322,6 +3354,11 @@ struct TerminalHomeView: View {
         // selected tab (open() selects Agents); the cold-launch / just-loaded case is
         // handled at the end of load().
         .onChange(of: push.pendingPaneID) { _, newValue in if newValue != nil { applyDeepLink() } }
+        .onChange(of: frontID) { _, id in
+            guard id == nil, paneOpenedFromGram else { return }
+            paneOpenedFromGram = false
+            selectedTab = .gram
+        }
         .onChange(of: push.pendingGram) { _, newValue in if newValue { openGramIfPending() } }
         // ONE item-based sheet, not two stacked isPresented presentations (stacked
         // presentation modifiers on a single view are historically fragile). A SHEET
@@ -8318,17 +8355,17 @@ struct SettingsView: View {
     }
     private var accountsHeaderTint: Color { exhaustedAccounts.isEmpty ? Palette.textFaint : Palette.waiting }
 
-    private var notifyOnCount: Int { [notifyNeedsInput, notifyDies, notifyFinishes].filter { $0 }.count }
+    private var notifyOnCount: Int { [notifyNeedsInput, notifyDies, notifyFinishes, notifyGram].filter { $0 }.count }
 
     /// iOS is blocking the alerts the user asked for (at least one on, permission denied).
     private var notifyBlocked: Bool { anyNotifyOn && notifyAuth == .denied }
 
     /// "N of 4 alerts on" — the Notifications detail-header subtitle.
-    private var notifyHeaderSubtitle: String { "\(notifyOnCount) of 3 alerts on" }
+    private var notifyHeaderSubtitle: String { "\(notifyOnCount) of 4 alerts on" }
 
     /// "N on · blocked" (amber) when iOS is blocking, else "N of 4 on".
     private var notifyManageValue: String {
-        notifyBlocked ? "\(notifyOnCount) on · blocked" : "\(notifyOnCount) of 3 on"
+        notifyBlocked ? "\(notifyOnCount) on · blocked" : "\(notifyOnCount) of 4 on"
     }
     private var notifyManageTint: Color { notifyBlocked ? Palette.waiting : Palette.textDim }
 
@@ -8912,6 +8949,8 @@ struct SettingsView: View {
                 groupedToggleRow("An agent dies", $notifyDies)
                 rowDivider
                 groupedToggleRow("An agent finishes", $notifyFinishes)
+                rowDivider
+                groupedToggleRow("A gram message arrives", $notifyGram)
                 if let fix = notifyPermissionFix {
                     rowDivider
                     notifyPermissionRow(fix)
@@ -9057,7 +9096,7 @@ struct SettingsView: View {
     /// At least one alert category is on. A permission FIX is only surfaced when this is
     /// true — if every toggle is off the system permission is moot, so we neither prompt
     /// nor point to Settings (matching AppDelegate.requestAuthorizationIfWanted's gating).
-    private var anyNotifyOn: Bool { notifyNeedsInput || notifyDies || notifyFinishes }
+    private var anyNotifyOn: Bool { notifyNeedsInput || notifyDies || notifyFinishes || notifyGram }
 
     private enum NotifyPermissionFix { case needAllow, denied }
     private var notifyPermissionFix: NotifyPermissionFix? {

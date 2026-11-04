@@ -1220,6 +1220,14 @@ struct GramView: View {
     /// One inbox feed row with what draws above it: its time separator and the unread rule.
     private func inboxRow(index: Int, entry: GramFeedEntry) -> some View {
         GramFeedRow(index: index, entry: entry) {
+            if entry.message.kind != nil {
+                // herdr's own entry about an agent: opens that agent's pane in its session.
+                GramEventRow(message: entry.message, fontScale: uiFontScale) {
+                    guard let paneID = entry.message.paneID else { return }
+                    PushCenter.shared.tapped(paneID: paneID, session: entry.message.session)
+                }
+                .equatable()
+            } else {
             GramRow(
                 message: entry.message,
                 isDownloadingFile: downloadingFileFor == entry.message.id,
@@ -1245,6 +1253,7 @@ struct GramView: View {
             // A page render (a keystroke, a poll, another file's progress) skips
             // every row whose inputs are unchanged (`GramRow.==`).
             .equatable()
+            }
         }
     }
 

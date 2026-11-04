@@ -72,6 +72,16 @@ public struct GramFile: Decodable, Sendable, Equatable {
 }
 
 /// One gram message as returned by the server.
+/// An entry herdr wrote into Gram on an agent's behalf (the owner's inbox).
+public enum GramEventKind: String, Decodable, Sendable, Equatable {
+    /// The agent is waiting on the owner; `text` is its question.
+    case blocked
+    /// The agent finished a turn; `text` is its recap.
+    case recap
+    /// The agent's process exited.
+    case died
+}
+
 public struct GramMessage: Decodable, Identifiable, Sendable, Equatable {
     public let id: String
     public let direction: GramDirection
@@ -100,11 +110,20 @@ public struct GramMessage: Decodable, Identifiable, Sendable, Equatable {
     /// `<alias>/<name>` and the daemon knows the alias's machine. Absent otherwise, and
     /// from daemons predating it.
     public let machineLabel: String?
+    /// What herdr itself wrote this entry about, for an agent the owner did not hear from
+    /// directly; nil for an ordinary message. Absent from daemons predating the inbox.
+    public let kind: GramEventKind?
+    /// Where the entry's agent lives, so a tap can open its pane (the raw log).
+    public let paneID: String?
+    public let session: String?
+    /// A `blocked` entry whose agent has since moved on.
+    public let resolved: Bool
 
     public init(id: String, direction: GramDirection, from: String, to: String? = nil, text: String,
                 grabbedBy: String? = nil, grabbedUnixMs: UInt64? = nil, createdUnixMs: UInt64,
                 readByOwner: Bool, file: GramFile? = nil, expiredFile: GramFile? = nil,
-                machineLabel: String? = nil) {
+                machineLabel: String? = nil, kind: GramEventKind? = nil, paneID: String? = nil,
+                session: String? = nil, resolved: Bool = false) {
         self.id = id
         self.direction = direction
         self.from = from
@@ -117,6 +136,10 @@ public struct GramMessage: Decodable, Identifiable, Sendable, Equatable {
         self.file = file
         self.expiredFile = file == nil ? expiredFile : nil
         self.machineLabel = machineLabel
+        self.kind = kind
+        self.paneID = paneID
+        self.session = session
+        self.resolved = resolved
     }
 
     enum CodingKeys: String, CodingKey {
@@ -127,6 +150,8 @@ public struct GramMessage: Decodable, Identifiable, Sendable, Equatable {
         case createdUnixMs = "created_unix_ms"
         case readByOwner = "read_by_owner"
         case machineLabel = "machine_label"
+        case kind, session, resolved
+        case paneID = "pane_id"
     }
 
     public init(from decoder: Decoder) throws {
@@ -143,6 +168,11 @@ public struct GramMessage: Decodable, Identifiable, Sendable, Equatable {
         file = try c.decodeIfPresent(GramFile.self, forKey: .file)
         expiredFile = try file == nil ? c.decodeIfPresent(GramFile.self, forKey: .expiredFile) : nil
         machineLabel = try c.decodeIfPresent(String.self, forKey: .machineLabel)
+        // An unknown kind from a newer daemon reads as an ordinary message, not a failure.
+        kind = (try? c.decodeIfPresent(GramEventKind.self, forKey: .kind)) ?? nil
+        paneID = try c.decodeIfPresent(String.self, forKey: .paneID)
+        session = try c.decodeIfPresent(String.self, forKey: .session)
+        resolved = try c.decodeIfPresent(Bool.self, forKey: .resolved) ?? false
     }
 
     /// The attachment as a one-line preview names it: the file's name, "<name> (expired)"

@@ -38,6 +38,29 @@ final class WidgetDataTests: XCTestCase {
         XCTAssertNil(try list("working").activityContent.question)
     }
 
+    func testASubagentGetsNoRowAndCountsTowardNothing() throws {
+        func info(_ json: String) throws -> AgentInfo { try JSONDecoder().decode(AgentInfo.self, from: Data(json.utf8)) }
+        let list = AgentList(agents: [
+            try info(#"{"pane_id":"w1:p1","agent":"claude","agent_status":"working"}"#),
+            try info(#"{"pane_id":"w1:p2","agent":"codex","agent_status":"blocked","subagent":true}"#),
+        ], livePaneIDs: ["w1:p1", "w1:p2"])
+        XCTAssertEqual(list.rows.map(\.info.paneID), ["w1:p1"])
+        XCTAssertEqual(list.activityContent.needsYouCount, 0, "a blocked subagent is its orchestrator's to answer")
+        XCTAssertEqual(list.activityContent.workingCount, 1)
+    }
+
+    func testGramEventFieldsDecode() throws {
+        let json = #"{"id":"g1","direction":"agent_to_owner","from":"jarvis","text":"Proceed?","created_unix_ms":1,"read_by_owner":false,"kind":"blocked","pane_id":"w2:p1","session":"top-l","resolved":true}"#
+        let message = try JSONDecoder().decode(GramMessage.self, from: Data(json.utf8))
+        XCTAssertEqual(message.kind, .blocked)
+        XCTAssertEqual(message.paneID, "w2:p1")
+        XCTAssertEqual(message.session, "top-l")
+        XCTAssertTrue(message.resolved)
+        let plain = try JSONDecoder().decode(GramMessage.self, from: Data(#"{"id":"g2","direction":"agent_to_owner","from":"a","text":"hi","created_unix_ms":1,"read_by_owner":false,"kind":"someday"}"#.utf8))
+        XCTAssertNil(plain.kind, "an unknown kind from a newer daemon is an ordinary message")
+        XCTAssertFalse(plain.resolved)
+    }
+
     func testPendingRequestDecodes() throws {
         let json = #"{"pane_id":"w1:p1","agent_status":"blocked","pending_request":"Bash command\ngit push\nDo you want to proceed?"}"#
         let info = try JSONDecoder().decode(AgentInfo.self, from: Data(json.utf8))

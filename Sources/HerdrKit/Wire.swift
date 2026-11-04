@@ -366,6 +366,10 @@ public struct AgentInfo: Decodable, Equatable, Sendable, Identifiable {
     /// What a blocked agent is asking, read by herdr off its screen (the lines above its
     /// numbered menu). Absent when nothing is pending and on an older server.
     public let pendingRequest: String?
+    /// herdr's flag for a worker another agent spawned (`codex exec`): the owner never sees
+    /// it in the roster. Absent unless true, and on an older server.
+    public let subagent: Bool?
+    public var isSubagent: Bool { subagent == true }
     /// The herdr session this row was listed from, when the app shows several sessions at
     /// once; nil is the session the app is connected to. Set by the app, never decoded.
     public internal(set) var session: String? = nil
@@ -475,6 +479,7 @@ public struct AgentInfo: Decodable, Equatable, Sendable, Identifiable {
         case sessionTransfer = "session_transfer"
         case guestRunning = "guest_running"
         case pendingRequest = "pending_request"
+        case subagent
     }
 }
 

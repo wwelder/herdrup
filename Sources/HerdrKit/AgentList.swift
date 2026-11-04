@@ -430,6 +430,9 @@ public struct AgentList: Equatable, Sendable {
     /// reading, since inferring death from missing evidence would mark every
     /// agent stopped the moment a census failed to arrive.
     public init(agents: [AgentInfo], livePaneIDs: Set<String>? = nil) {
+        // A worker another agent spawned (`codex exec`) is that agent's business: it gets no
+        // row and counts toward nothing, like herdr's own agent panel.
+        let agents = agents.filter { !$0.isSubagent }
         // Archived agents are pulled out first: they never appear in a live status
         // section and never count toward "needs you" / quiet. A released pane is not
         // "live", so they carry isLive = false; their own section renders them.

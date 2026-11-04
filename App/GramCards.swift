@@ -1103,3 +1103,73 @@ struct GramConversationRow: View {
             .accessibilityHidden(true)
     }
 }
+
+/// An entry herdr wrote for an agent: its blocked question, a finished turn's recap, or its
+/// exit. A full-width card rather than a bubble, because the agent did not say it to the
+/// owner. Tapping opens the agent's pane, where the raw log is.
+struct GramEventRow: View, Equatable {
+    let message: GramMessage
+    /// Compared in `==` for the same reason as `GramRow.fontScale`.
+    var fontScale: Double = 1
+    var onOpen: () -> Void
+
+    nonisolated static func == (lhs: GramEventRow, rhs: GramEventRow) -> Bool {
+        lhs.message == rhs.message && lhs.fontScale == rhs.fontScale
+    }
+
+    private var tint: Color {
+        switch message.kind {
+        case .blocked: return message.resolved ? Palette.textFaint : Palette.waiting
+        case .died: return Palette.died
+        case .recap, nil: return Palette.working
+        }
+    }
+
+    private var label: String {
+        switch message.kind {
+        case .blocked: return message.resolved ? "answered" : "needs you"
+        case .died: return "exited"
+        case .recap, nil: return "finished"
+        }
+    }
+
+    var body: some View {
+        Button(action: onOpen) {
+            HStack(alignment: .top, spacing: 10) {
+                Circle().fill(tint).frame(width: 8, height: 8).padding(.top, 6)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text(message.senderName)
+                            .font(Typography.app(14, .semibold))
+                            .foregroundStyle(Palette.text)
+                            .lineLimit(1)
+                        Text(label).font(Typography.app(12)).foregroundStyle(tint)
+                        Spacer(minLength: 4)
+                        if let session = message.session {
+                            Text(session).font(Typography.app(12)).foregroundStyle(Palette.textFaint)
+                        }
+                    }
+                    Text(message.text)
+                        .font(Typography.app(14))
+                        .foregroundStyle(message.resolved ? Palette.textFaint : Palette.textDim)
+                        .lineLimit(message.kind == .blocked ? 8 : 6)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Palette.textFaint)
+                    .padding(.top, 4)
+            }
+            .padding(12)
+            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Palette.surface))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Palette.hairline))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(message.paneID == nil)
+        .accessibilityElement(children: .combine)
+        .accessibilityHint(message.paneID == nil ? "" : "Opens the agent")
+        .accessibilityIdentifier("gram-event-\(message.id)")
+    }
+}
