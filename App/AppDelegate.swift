@@ -69,7 +69,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         guard ScreenshotMock.mode == nil else { return }
         #endif
         guard PushCenter.Prefs.current.anyEnabled else { return }
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
+        // `.criticalAlert` is for an agent's `herdr gram send --critical`. iOS ignores it until the
+        // app holds Apple's critical-alerts entitlement, then asks once with its own prompt.
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge, .criticalAlert]) { granted, _ in
             guard granted else { return }
             DispatchQueue.main.async { UIApplication.shared.registerForRemoteNotifications() }
         }
