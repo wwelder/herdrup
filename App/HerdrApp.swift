@@ -4802,13 +4802,14 @@ struct TerminalHomeView: View {
         let folder = info.cwd
             .map { URL(fileURLWithPath: $0).lastPathComponent }
             .flatMap { $0.isEmpty || $0 == "/" ? nil : $0 }
-        let detail: String
+        var detail: String
         switch (folder, info.activityText) {
         case let (f?, a?): detail = "\(f) · \(a)"
         case let (f?, nil): detail = f
         case let (nil, a?): detail = a
         case (nil, nil): detail = info.agent ?? "terminal"
         }
+        if let background = info.background { detail = "\(background) · \(detail)" }
         // The All view mixes sessions: lead with the row's session.
         guard showAllSessions, runningSessions.count >= 2 else { return detail }
         return "\(info.session ?? connectedSessionName) · \(detail)"

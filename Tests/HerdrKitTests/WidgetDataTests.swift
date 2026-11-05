@@ -49,6 +49,16 @@ final class WidgetDataTests: XCTestCase {
         XCTAssertEqual(list.activityContent.workingCount, 1)
     }
 
+    func testAnIdleAgentWithBackgroundWorkIsRunning() throws {
+        func info(_ json: String) throws -> AgentInfo { try JSONDecoder().decode(AgentInfo.self, from: Data(json.utf8)) }
+        let list = AgentList(agents: [
+            try info(#"{"pane_id":"w1:p1","agent":"claude","agent_status":"idle","background":"20 local agents"}"#),
+            try info(#"{"pane_id":"w1:p2","agent":"claude","agent_status":"idle"}"#),
+        ], livePaneIDs: ["w1:p1", "w1:p2"])
+        XCTAssertEqual(list.rows.first { $0.info.paneID == "w1:p1" }?.group, .working)
+        XCTAssertEqual(list.activityContent.workingCount, 1)
+    }
+
     func testGramEventFieldsDecode() throws {
         let json = #"{"id":"g1","direction":"agent_to_owner","from":"jarvis","text":"Proceed?","created_unix_ms":1,"read_by_owner":false,"kind":"blocked","pane_id":"w2:p1","session":"top-l","resolved":true}"#
         let message = try JSONDecoder().decode(GramMessage.self, from: Data(json.utf8))

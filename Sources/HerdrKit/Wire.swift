@@ -366,6 +366,10 @@ public struct AgentInfo: Decodable, Equatable, Sendable, Identifiable {
     /// What a blocked agent is asking, read by herdr off its screen (the lines above its
     /// numbered menu). Absent when nothing is pending and on an older server.
     public let pendingRequest: String?
+    /// What a Claude Code agent still runs in the background, from its footer ("1 shell",
+    /// "3 local agents"). Absent with none and on an older server. Such an agent is
+    /// running even while it waits idle at its prompt (`AgentRow`).
+    public internal(set) var background: String? = nil
     /// herdr's flag for a worker another agent spawned (`codex exec`): the owner never sees
     /// it in the roster. Absent unless true, and on an older server.
     public let subagent: Bool?
@@ -479,7 +483,7 @@ public struct AgentInfo: Decodable, Equatable, Sendable, Identifiable {
         case sessionTransfer = "session_transfer"
         case guestRunning = "guest_running"
         case pendingRequest = "pending_request"
-        case subagent
+        case subagent, background
     }
 }
 

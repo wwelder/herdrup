@@ -112,7 +112,9 @@ public struct AgentRow: Equatable, Sendable, Identifiable {
     public init(info: AgentInfo, isLive: Bool = true) {
         self.info = info
         self.isLive = isLive
-        let status = AgentStatus(wire: info.agentStatus)
+        var status = AgentStatus(wire: info.agentStatus)
+        // Idle at its prompt with background shells or subagents running is still running.
+        if info.background != nil, status == .idle || status == .done { status = .working }
         self.status = status
         self.group = AgentRow.resolvedGroup(info: info, status: status, isLive: isLive)
     }
