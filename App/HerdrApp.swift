@@ -761,6 +761,10 @@ struct ConnectView: View {
     /// The scan-to-connect sheet (#126) — the path that needs no key, no host address and
     /// no knowledge of what a daemon is.
     @State private var showingPairing = false
+    /// The saved host last opened from this list, reopened at launch.
+    @AppStorage("hosts.lastOpened") private var lastOpened = ""
+    /// Launch reopens `lastOpened` once per process: going back to the list stays there.
+    private static var reopenedLastHost = false
 
     var body: some View {
         ZStack {
@@ -801,6 +805,10 @@ struct ConnectView: View {
         .sheet(item: $editorTarget) { target in
             HostEditor(target: target, store: savedHosts) { creds in
                 editorTarget = nil
+                let endpoint = HostEndpoint(host: creds.host, port: creds.port)
+                if let saved = savedHosts.hosts.first(where: {
+                    $0.username == creds.username && HostEndpoint.parse($0.host) == endpoint
+                }) { lastOpened = saved.id.uuidString }
                 onConnect(creds)
             }
         }
@@ -813,6 +821,7 @@ struct ConnectView: View {
                 }
             }
         }
+        .onAppear(perform: reopenLastHost)
         .sheet(isPresented: $showingInviteScan, onDismiss: {
             guard let invite = scannedInvite else { return }
             scannedInvite = nil
@@ -1112,6 +1121,19 @@ struct ConnectView: View {
         }
     }
 
+    /// At launch, connect straight to the host last opened, when its secret is on this phone.
+    private func reopenLastHost() {
+        #if DEBUG
+        guard ScreenshotMock.mode == nil else { return }
+        #endif
+        guard !Self.reopenedLastHost else { return }
+        Self.reopenedLastHost = true
+        guard connecting == nil,
+              let saved = savedHosts.hosts.first(where: { $0.id.uuidString == lastOpened }),
+              storedSecret(saved) != nil else { return }
+        tapSavedHost(saved)
+    }
+
     /// One-tap connect from a saved host. If the secret is not on this device, open the
     /// editor in reconnect mode, which says so and asks for it, rather than a silent dead tap.
     private func tapSavedHost(_ saved: SavedHost) {
@@ -1131,6 +1153,7 @@ struct ConnectView: View {
             creds = SSHCredentials(host: ep.host, port: ep.port, username: saved.username,
                                    password: password, remoteSocketPath: "")
         }
+        lastOpened = saved.id.uuidString
         onConnect(creds)
     }
 }
