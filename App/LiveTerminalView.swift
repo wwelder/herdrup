@@ -249,6 +249,12 @@ struct LiveTerminalView: UIViewRepresentable {
         // re-claim exactly once, from whichever of the two flips last.
         context.coordinator.setSceneBackgrounded(sceneBackgrounded)
         context.coordinator.setForeground(isForeground)
+        // The pane in front is what Picture in Picture shows when the app is backgrounded.
+        if isForeground {
+            TerminalPiP.shared.attach(host: uiView, content: terminalView)
+        } else {
+            TerminalPiP.shared.detach(host: uiView)
+        }
         // A kept-alive pane behind another pane, the list, Gram or Settings, and any pane
         // while the scene is not active, holds its caret steady: the blink is a repeating
         // animation that keeps the window compositing (#427).
@@ -342,6 +348,7 @@ struct LiveTerminalView: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ uiView: TerminalSurfaceView, coordinator: Coordinator) {
+        TerminalPiP.shared.detach(host: uiView)
         coordinator.stop()
     }
 

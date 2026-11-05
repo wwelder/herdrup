@@ -228,10 +228,12 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        # NOTE: no UIBackgroundModes here. Our push is an ALERT the user taps (agent transition) —
-        # the system delivers alert pushes with no background mode, and `remote-notification` only
-        # matters for silent `content-available` wakes (which also require a fetch handler we don't
-        # implement). Declaring it unused is an App Store review flag, so it is deliberately omitted.
+        # `audio` is Picture in Picture's background mode (TerminalPiP): backgrounding the app
+        # with an agent open floats its terminal. No `remote-notification`: our push is an ALERT
+        # the user taps, delivered with no background mode, and declaring an unused mode is an
+        # App Store review flag.
+        UIBackgroundModes:
+          - audio
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: inc.simcast.herdrup

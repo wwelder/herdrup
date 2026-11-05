@@ -5813,6 +5813,7 @@ struct TerminalPaneContent: View {
     /// claim back so another device viewing the agent is not held at this one's width
     /// while the app is suspended. A transient `.inactive` keeps the claim.
     @State private var wasBackgrounded = false
+    @ObservedObject private var pip = TerminalPiP.shared
     /// The live terminal's stream-liveness box. A `@State` reference type, so it SURVIVES
     /// a `streamGen` remount and keeps reading the same stream's evidence across one.
     @State private var terminalLiveness = StreamLiveness()
@@ -6020,7 +6021,8 @@ struct TerminalPaneContent: View {
                                  onNavigate: onNavigate, isForeground: isForeground,
                                  // Releases the width claim while the scene is in the
                                  // background; cleared with the remount decision below.
-                                 sceneBackgrounded: wasBackgrounded,
+                                 // Picture in Picture keeps showing the pane, so it keeps it.
+                                 sceneBackgrounded: wasBackgrounded && !pip.isActive,
                                  // The find and reply fields own their own responders.
                                  // Terminal focus is never inferred from device idiom.
                                  wantsTerminalKeyFocus: isForeground && !replyFocused && !findFocused
