@@ -1091,13 +1091,14 @@ struct GramConversationRow: View {
 /// which opens the agent's pane, then the text as markdown across the column.
 struct GramEventRow: View, Equatable {
     let message: GramMessage
+    var showsStatus = true
     /// Compared in `==` for the same reason as `GramRow.fontScale`.
     var fontScale: Double = 1
     var onOpen: () -> Void
     @Environment(\.horizontalSizeClass) private var sizeClass
 
     nonisolated static func == (lhs: GramEventRow, rhs: GramEventRow) -> Bool {
-        lhs.message == rhs.message && lhs.fontScale == rhs.fontScale
+        lhs.message == rhs.message && lhs.showsStatus == rhs.showsStatus && lhs.fontScale == rhs.fontScale
     }
 
     private var tint: Color {
@@ -1133,7 +1134,7 @@ struct GramEventRow: View, Equatable {
                     .padding(.bottom, 8)
                     .accessibilityLabel("You: \(prompt)")
             }
-            status
+            if showsStatus { status }
             ChatMarkdownView(markdown: message.text)
                 .opacity(message.resolved ? 0.6 : 1)
         }

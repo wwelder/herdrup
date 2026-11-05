@@ -1375,7 +1375,7 @@ struct GramView: View {
         GramFeedRow(index: index, entry: entry) {
             if entry.message.kind != nil {
                 // herdr's own entry about an agent: opens that agent's pane in its session.
-                GramEventRow(message: entry.message, fontScale: uiFontScale) {
+                GramEventRow(message: entry.message, showsStatus: entry.showsStatus, fontScale: uiFontScale) {
                     guard let paneID = entry.message.paneID else { return }
                     // A left-edge swipe back ends on the same touch-up as this card's tap: decide
                     // after both have run, and stay on the contacts if the swipe took us there.
@@ -3061,6 +3061,9 @@ struct GramFeedEntry: Identifiable {
     /// The unread rule above the row.
     let unreadCount: Int?
     let startsGroup: Bool
+    /// An agent event's status line ("Finished · Open ›"). Every event of one pane opens the
+    /// same agent, so only the newest shows it, plus any still waiting for the owner.
+    var showsStatus = true
     var id: String { message.id }
     var startsAfterMarker: Bool { separator != nil || unreadCount != nil }
 
@@ -3078,12 +3081,19 @@ struct GramFeedEntry: Identifiable {
             return (separates ? date : nil, unread)
         }
         func breaks(_ index: Int) -> Bool { markers[index].separator != nil || markers[index].unread != nil }
+        var newestPerPane: [String: String] = [:]
+        for row in rows where row.kind != nil {
+            if let pane = row.paneID { newestPerPane[(row.session ?? "") + "/" + pane] = row.id }
+        }
         return rows.indices.map { index in
-            GramFeedEntry(
-                message: rows[index],
+            let row = rows[index]
+            let waiting = row.kind == .blocked && !row.resolved
+            return GramFeedEntry(
+                message: row,
                 separator: markers[index].separator,
                 unreadCount: markers[index].unread,
-                startsGroup: index == 0 || breaks(index) || !GramRow.sameRun(rows[index - 1], rows[index])
+                startsGroup: index == 0 || breaks(index) || !GramRow.sameRun(rows[index - 1], row),
+                showsStatus: waiting || row.paneID.map { newestPerPane[(row.session ?? "") + "/" + $0] == row.id } ?? true
             )
         }
     }
