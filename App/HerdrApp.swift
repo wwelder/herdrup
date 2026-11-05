@@ -1781,6 +1781,11 @@ struct TerminalHomeView: View {
     /// per production poll interval, never once per row. `rosterClockNow` is its clock.
     @State private var rosterNow = TerminalHomeView.rosterClockNow()
     private var agents: [AgentInfo] { displayedRoster.agents }
+    /// Every running session's agents, for Gram: its contacts span sessions even while the
+    /// roster shows one.
+    private var gramAgents: [AgentInfo] {
+        showAllSessions ? agents : agents + otherRosters.keys.sorted().flatMap { otherRosters[$0] ?? [] }
+    }
     private var accounts: [CredentialAccount] { displayedRoster.accounts }
     @State private var error: String?
     @State private var loading = true
@@ -2576,7 +2581,7 @@ struct TerminalHomeView: View {
                              readAllToken: gramReadAllToken,
                              searchText: $gramSearch,
                              newestToken: gramNewestToken,
-                             agents: agents,
+                             agents: gramAgents,
                              connectedSession: connectedSessionName)
                 case .settings:
                     SettingsView(
@@ -3155,7 +3160,7 @@ struct TerminalHomeView: View {
                 GramView(client: client, unread: gramUnread,
                          showingSaved: $gramShowingSaved,
                          newestToken: gramNewestToken,
-                         agents: agents,
+                         agents: gramAgents,
                          connectedSession: connectedSessionName)
                     .tag(HomeTab.gram)
                     .tabItem { Label(HomeTab.gram.label, systemImage: HomeTab.gram.icon) }

@@ -839,7 +839,9 @@ struct GramView: View {
             VStack(spacing: -6) {
                 GramAvatar(name: contact.name, size: 34).accessibilityHidden(true)
                 HStack(spacing: 5) {
-                    Circle().fill(contact.statusTint).frame(width: 7, height: 7)
+                    if let tint = contact.statusTint {
+                        Circle().fill(tint).frame(width: 7, height: 7)
+                    }
                     Text(verbatim: contact.name)
                         .font(Typography.app(13, .semibold))
                         .foregroundStyle(Palette.text)

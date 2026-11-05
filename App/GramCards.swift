@@ -1115,6 +1115,7 @@ struct GramEventRow: View, Equatable {
     /// Compared in `==` for the same reason as `GramRow.fontScale`.
     var fontScale: Double = 1
     var onOpen: () -> Void
+    @Environment(\.horizontalSizeClass) private var sizeClass
 
     nonisolated static func == (lhs: GramEventRow, rhs: GramEventRow) -> Bool {
         lhs.message == rhs.message && lhs.fontScale == rhs.fontScale
@@ -1129,6 +1130,26 @@ struct GramEventRow: View, Equatable {
     }
 
     var body: some View {
+        VStack(spacing: 8) {
+            // The owner's prompt for the turn, as their own bubble above the agent's recap.
+            if let prompt = message.prompt {
+                Text(verbatim: prompt)
+                    .font(GramType.body)
+                    .foregroundStyle(Palette.onAccent)
+                    .lineLimit(8)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(GramBubble.outFill,
+                                in: RoundedRectangle(cornerRadius: GramBubble.radius, style: .continuous))
+                    .gramBubbleWidth(incoming: false, sizeClass: sizeClass)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .accessibilityLabel("You: \(prompt)")
+            }
+            card
+        }
+    }
+
+    private var card: some View {
         Button(action: onOpen) {
             HStack(alignment: .top, spacing: 10) {
                 Circle().fill(tint).frame(width: 8, height: 8).padding(.top, 6)
@@ -1154,15 +1175,12 @@ struct GramEventRow: View, Equatable {
 }
 
 extension GramContact {
-    /// Status = colour: amber waiting on you, blue working, grey idle or gone, red exited.
-    var statusTint: Color {
+    /// Amber waiting, blue working (background shells and subagents count), red died;
+    /// none for an idle or gone agent, so the dot only shows when something is happening.
+    var statusTint: Color? {
         if waiting { return Palette.waiting }
-        guard let agent else { return last?.kind == .died ? Palette.died : Palette.textFaint }
-        switch agent.agentStatus {
-        case "working": return Palette.working
-        case "blocked": return Palette.waiting
-        default: return Palette.textFaint
-        }
+        guard let agent else { return last?.kind == .died ? Palette.died : nil }
+        return agent.agentStatus == "working" || agent.background != nil ? Palette.working : nil
     }
 }
 
@@ -1183,8 +1201,10 @@ struct GramContactRow: View {
                 } else {
                     GramAvatar(name: contact.name, size: 42)
                         .overlay(alignment: .bottomTrailing) {
-                            Circle().fill(contact.statusTint).frame(width: 12, height: 12)
-                                .overlay(Circle().stroke(Palette.ground, lineWidth: 2))
+                            if let tint = contact.statusTint {
+                                Circle().fill(tint).frame(width: 12, height: 12)
+                                    .overlay(Circle().stroke(Palette.ground, lineWidth: 2))
+                            }
                         }
                 }
             }

@@ -118,6 +118,8 @@ public struct GramMessage: Decodable, Identifiable, Sendable, Equatable {
     public let session: String?
     /// The agent's working directory when herdr wrote the entry or the agent sent it.
     public let cwd: String?
+    /// A `recap` entry's turn-starting prompt: what the owner typed to the agent.
+    public let prompt: String?
     /// A `blocked` entry whose agent has since moved on.
     public let resolved: Bool
 
@@ -128,7 +130,7 @@ public struct GramMessage: Decodable, Identifiable, Sendable, Equatable {
                 grabbedBy: String? = nil, grabbedUnixMs: UInt64? = nil, createdUnixMs: UInt64,
                 readByOwner: Bool, file: GramFile? = nil, expiredFile: GramFile? = nil,
                 machineLabel: String? = nil, kind: GramEventKind? = nil, paneID: String? = nil,
-                session: String? = nil, cwd: String? = nil, resolved: Bool = false) {
+                session: String? = nil, cwd: String? = nil, prompt: String? = nil, resolved: Bool = false) {
         self.id = id
         self.direction = direction
         self.from = from
@@ -145,6 +147,7 @@ public struct GramMessage: Decodable, Identifiable, Sendable, Equatable {
         self.paneID = paneID
         self.session = session
         self.cwd = cwd
+        self.prompt = prompt
         self.resolved = resolved
     }
 
@@ -156,7 +159,7 @@ public struct GramMessage: Decodable, Identifiable, Sendable, Equatable {
         case createdUnixMs = "created_unix_ms"
         case readByOwner = "read_by_owner"
         case machineLabel = "machine_label"
-        case kind, session, cwd, resolved
+        case kind, session, cwd, prompt, resolved
         case paneID = "pane_id"
     }
 
@@ -179,6 +182,7 @@ public struct GramMessage: Decodable, Identifiable, Sendable, Equatable {
         paneID = try c.decodeIfPresent(String.self, forKey: .paneID)
         session = try c.decodeIfPresent(String.self, forKey: .session)
         cwd = try c.decodeIfPresent(String.self, forKey: .cwd)
+        prompt = try c.decodeIfPresent(String.self, forKey: .prompt)
         resolved = try c.decodeIfPresent(Bool.self, forKey: .resolved) ?? false
     }
 
