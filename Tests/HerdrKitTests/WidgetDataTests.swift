@@ -108,6 +108,7 @@ final class WidgetDataTests: XCTestCase {
         XCTAssertEqual(byID["top-l/w1:p1"]?.name, "Assistant feature")
         XCTAssertEqual(byID["top-l/w1:p1"]?.folder, "monorepo")
         XCTAssertEqual(byID["top-l/w1:p1"]?.unread, 2, "its recap and its own Gram")
+        XCTAssertEqual(GramContactIndex.unreadContactCount(in: messages), 1, "the tab badges contacts, not messages")
 
         XCTAssertEqual(byID["top-r/w1:p1"]?.name, "Crawl health", "another session's agent, with no history yet")
         XCTAssertNil(byID["top-r/w1:p1"]?.last)

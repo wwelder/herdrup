@@ -579,49 +579,6 @@ final class GramTests: XCTestCase {
         XCTAssertFalse(app.buttons["gram-search-older"].exists, "and there is nothing older to search")
     }
 
-    /// vetrina's report runs to 11 lines, past the 8-line fold, so it ends in "…" with a
-    /// separate "Read more" line; tapping it shows the whole message (the bubble grows) and the
-    /// line becomes "Show less", which folds it back.
-    func testReadMoreExpandsALongMessageAndShowLessFoldsIt() {
-        let app = launchGram()
-        XCTAssertTrue(app.staticTexts["clientloop"].waitForExistence(timeout: 10))
-
-        let readMore = app.buttons["gram-read-more"].firstMatch
-        let showLess = app.buttons["gram-show-less"].firstMatch
-        XCTAssertTrue(readMore.waitForExistence(timeout: 5), "a long report should fold with Read more")
-        XCTAssertFalse(showLess.exists, "a folded report offers Read more, not Show less")
-        // The feed opens at the newest message; on a phone the report can sit just above it.
-        for _ in 0..<3 where !readMore.isHittable { app.swipeDown() }
-        XCTAssertTrue(readMore.isHittable, "Read more should be reachable")
-
-        // The report is exposed ONCE: the fold measures it with hidden copies, which must
-        // not reach VoiceOver (they did once, and read the report three times).
-        let prose = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Deployed."))
-        XCTAssertEqual(prose.count, 1, "VoiceOver should meet the report once")
-        let bubble = app.descendants(matching: .any)["gram-bubble-g4"]
-        XCTAssertTrue(bubble.exists, "the folded report's bubble should be on screen")
-        let folded = bubble.frame
-
-        readMore.tap()
-        XCTAssertTrue(showLess.waitForExistence(timeout: 3), "an expanded message offers Show less")
-        XCTAssertFalse(readMore.exists, "an expanded message has no Read more")
-        Thread.sleep(forTimeInterval: 0.4)   // the expand animates (0.2 s)
-        // Three more 20 pt lines (the 15/20 body): the whole report, all 11 lines.
-        XCTAssertGreaterThanOrEqual(bubble.frame.height, folded.height + 3 * 20 - 4,
-                                    "the expanded report should show all 11 lines")
-        // Like Messages, the bubble hugs its widest line, so it may widen; never narrower.
-        XCTAssertGreaterThanOrEqual(bubble.frame.width, folded.width - 1, "expanding never narrows the bubble")
-
-        attach(app, "gram-read-more-expanded")
-
-        for _ in 0..<3 where !showLess.isHittable { app.swipeDown() }
-        showLess.tap()
-        XCTAssertTrue(readMore.waitForExistence(timeout: 3), "Show less folds the report back to Read more")
-        XCTAssertFalse(showLess.exists, "a folded report has no Show less")
-        Thread.sleep(forTimeInterval: 0.4)
-        XCTAssertEqual(bubble.frame.height, folded.height, accuracy: 2, "Show less folds back to 8 lines")
-    }
-
     /// The label of the DEBUG `gram-post-calls` probe once it contains `expected`: the mock's
     /// recorded `gram.post` calls, one `to=<name|queue> text=<text>` per line ("none" before
     /// any). The label, not the value: on the iPhone tab the value reads the tab's badge.

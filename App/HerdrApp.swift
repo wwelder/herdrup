@@ -3124,7 +3124,7 @@ struct TerminalHomeView: View {
         .accessibilityValue(badgeValue(tab, badge))
     }
 
-    /// The count a section's tab carries: Gram's unread messages, Settings' herdr update.
+    /// The count a section's tab carries: Gram's unread contacts, Settings' herdr update.
     private func tabBadgeCount(for tab: HomeTab, gram: Int) -> Int {
         switch tab {
         case .gram: return gram
@@ -3135,7 +3135,7 @@ struct TerminalHomeView: View {
 
     private func badgeValue(_ tab: HomeTab, _ badge: Int) -> String {
         guard badge > 0 else { return "" }
-        return tab == .settings ? "\(badge) update" : "\(badge) unread"
+        return tab == .settings ? "\(badge) update" : "\(badge) unread contacts"
     }
 
     /// One activity count. Rendered only when non-zero: a rail of zeroes is noise.
@@ -3348,11 +3348,11 @@ struct TerminalHomeView: View {
             guard selectedTab != .gram else { return }
             while !Task.isCancelled {
                 // Unconditional on purpose: `unread_only` is a small answer already,
-                // and this poller keeps no list to compare a digest against. The count is
-                // the daemon's `unread_count` when it sends one: a paging daemon answers
-                // with one page, which would undercount (`unreadBadgeCount`).
-                if let count = try? await client.gramList(unreadOnly: true).unreadBadgeCount {
-                    gramUnread.count = count
+                // and this poller keeps no list to compare a digest against.
+                // ponytail: counts contacts in the answer, so a daemon that pages unread-only
+                // answers can undercount past one page of unread grams.
+                if let answer = try? await client.gramList(unreadOnly: true) {
+                    gramUnread.count = GramContactIndex.unreadContactCount(in: answer.messages ?? [])
                 }
                 try? await Task.sleep(nanoseconds: 15_000_000_000)
             }

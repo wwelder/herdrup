@@ -112,6 +112,11 @@ public struct GramContactIndex: Sendable {
         }
     }
 
+    /// How many contacts have an unread message: the Gram tab's badge.
+    public static func unreadContactCount(in messages: [GramMessage]) -> Int {
+        GramContactIndex(messages: messages.filter(\.isUnread), agents: [], connectedSession: "").contacts.count
+    }
+
     /// The contact a message belongs to.
     public func key(of message: GramMessage) -> GramContact.Key {
         Self.key(of: message, aliases: aliases)
