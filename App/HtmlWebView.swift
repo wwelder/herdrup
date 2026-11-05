@@ -39,14 +39,8 @@ struct HtmlWebView: UIViewRepresentable {
     /// it on; flipping it applies to the NEXT preview, because the flag lives on the
     /// configuration a `WKWebView` copies at init.
     var allowsJavaScript: Bool = false
-    /// The feed reader's links open in the system browser (http, https, mailto) instead of
-    /// being cancelled. The document itself still never navigates.
-    var opensLinks = false
-    /// Painted under the document before it loads, for a document that paints this same
-    /// background; nil keeps the opaque white base (see the type doc).
-    var background: UIColor?
 
-    func makeCoordinator() -> Coordinator { Coordinator(opensLinks: opensLinks) }
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
@@ -66,11 +60,6 @@ struct HtmlWebView: UIViewRepresentable {
         let web = WKWebView(frame: .zero, configuration: config)
         web.navigationDelegate = context.coordinator
         web.scrollView.contentInsetAdjustmentBehavior = .always
-        if let background {
-            web.isOpaque = false
-            web.backgroundColor = background
-            web.scrollView.backgroundColor = background
-        }
 
         // The network block is a SECURITY boundary, so it must FAIL CLOSED: if the rule
         // store is unavailable or the rule fails to compile, show a safe placeholder
@@ -118,9 +107,6 @@ struct HtmlWebView: UIViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate {
         /// True once the initial programmatic load has been allowed through.
         private var didStartInitialLoad = false
-        private let opensLinks: Bool
-
-        init(opensLinks: Bool) { self.opensLinks = opensLinks }
 
         /// Freeze the viewer on the document it was handed: allow ONLY the first load
         /// (our `loadHTMLString`, an `about:blank` main-frame navigation), and cancel
@@ -134,11 +120,6 @@ struct HtmlWebView: UIViewRepresentable {
             decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
         ) {
             if didStartInitialLoad {
-                if opensLinks, navigationAction.navigationType == .linkActivated,
-                   let url = navigationAction.request.url,
-                   ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "") {
-                    UIApplication.shared.open(url)
-                }
                 decisionHandler(.cancel)
             } else {
                 didStartInitialLoad = true

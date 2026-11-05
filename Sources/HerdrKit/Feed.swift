@@ -1,76 +1,121 @@
 import Foundation
-#if canImport(FoundationXML)
-import FoundationXML
-#endif
 
-// HerdrUp's feed: RSS 2.0 and Atom files a script wrote to `~/.config/herdr/feeds/` on the
-// machine, served whole by `feed.list` over the owner's own connection, and parsed here. A
-// private summary (sleep, a digest) never needs a public URL or a key of its own: the SSH
-// connection is the encryption.
+// HerdrUp's feed: cards scripts on the machine write to
+// `~/.config/herdr/feeds/<source>/<id>.json`, served whole by `feed.list` over the owner's own
+// connection (the SSH connection is the encryption, so a private summary needs no public URL).
+// A card is something to read, or a question: actions to pick and/or a text field. The owner
+// answers with `feed.act`; herdr records the answer beside the card (`<id>.reply.json`) and runs
+// the source's `on-reply` script.
 
-/// One file from `feed.list`: its XML, or why the machine could not serve it.
-public struct FeedFile: Decodable, Sendable, Equatable {
-    public let name: String
-    public let xml: String?
+/// One card file from `feed.list`: its JSON and the owner's answer, unparsed, or why the
+/// machine could not serve it.
+public struct FeedCardFile: Decodable, Sendable, Equatable {
+    public let source: String
+    public let id: String
+    public let card: String?
+    public let reply: String?
     public let error: String?
 
-    public init(name: String, xml: String?, error: String? = nil) {
-        self.name = name
-        self.xml = xml
+    public init(source: String, id: String, card: String?, reply: String? = nil, error: String? = nil) {
+        self.source = source
+        self.id = id
+        self.card = card
+        self.reply = reply
         self.error = error
     }
 }
 
-/// One item of a feed, as the timeline and the reader show it.
-public struct FeedEntry: Identifiable, Codable, Sendable, Equatable, Hashable {
-    /// Stable across refreshes: the file, then the item's guid (or its link, or its title
-    /// and date), so read and starred marks survive a rewrite of the file.
+/// A button on a card. `role: "destructive"` draws it red.
+public struct FeedAction: Codable, Sendable, Hashable, Identifiable {
     public let id: String
-    /// The file it came from: the filter key.
-    public let feed: String
-    public let feedTitle: String
+    public let label: String
+    public let role: String?
+
+    public var isDestructive: Bool { role == "destructive" }
+}
+
+/// The owner's answer, as herdr recorded it.
+public struct FeedReply: Codable, Sendable, Hashable {
+    public let action: String?
+    public let text: String?
+    public let at: Date?
+
+    public init(action: String?, text: String?, at: Date?) {
+        self.action = action
+        self.text = text
+        self.at = at
+    }
+}
+
+/// One card, as the timeline and the reader show it.
+public struct FeedEntry: Identifiable, Codable, Sendable, Hashable {
+    /// `source/id`: the file's own name, so read and starred marks survive a rewrite.
+    public let id: String
+    public let source: String
+    public let cardID: String
     public let title: String
-    public let link: URL?
+    /// Markdown.
+    public let body: String
+    /// The timeline's preview; nil previews the body.
+    public let summary: String?
     public let date: Date?
-    public let author: String?
-    /// The item's content, HTML as RSS carries it, or plain text.
-    public let content: String
-    /// The content as plain text on one line, for the timeline.
-    public let excerpt: String
+    public let link: URL?
+    public let actions: [FeedAction]
+    /// The text field's placeholder: present when the card takes text.
+    public let input: String?
+    /// Asked again before an action is sent.
+    public let confirm: String?
+    public let expires: Date?
+    /// What the script made of the answer, written back into the card.
+    public let outcome: String?
+    public var reply: FeedReply?
+
+    /// Whether the card asks the owner something.
+    public var asks: Bool { !actions.isEmpty || input != nil }
+
+    /// Still waiting for the owner: it asks, and is neither answered, settled by its script,
+    /// nor expired.
+    public func isPending(at now: Date = Date()) -> Bool {
+        asks && reply == nil && outcome == nil && !isExpired(at: now)
+    }
+
+    public func isExpired(at now: Date = Date()) -> Bool { expires.map { $0 <= now } ?? false }
+
+    /// The answer in a few words: the chosen action's label, then the text.
+    public var replySummary: String? {
+        guard let reply else { return nil }
+        let label = reply.action.map { id in actions.first { $0.id == id }?.label ?? id }
+        let parts = [label, reply.text.map { "“\($0)”" }].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
 }
 
-/// A parsed feed file.
-public struct FeedChannel: Sendable, Equatable {
-    public let title: String
-    /// Newest first; undated items last, in file order.
-    public let entries: [FeedEntry]
-}
+public enum FeedCards {
+    public enum Failure: Error, Equatable { case notACard }
 
-public enum FeedParser {
-    public enum Failure: Error, Equatable { case notAFeed }
-
-    /// Parses an RSS 2.0 or Atom document from `file`. The title falls back to the file name.
-    public static func parse(_ xml: String, file: String) throws -> FeedChannel {
-        let collector = Collector()
-        let parser = XMLParser(data: Data(xml.utf8))
-        parser.delegate = collector
-        guard parser.parse() || !collector.items.isEmpty, collector.isFeed else { throw Failure.notAFeed }
-        let fallback = (file as NSString).deletingPathExtension
-        let feedTitle = collector.channelTitle.isEmpty ? fallback : collector.channelTitle
-        let entries = collector.items.map { item -> FeedEntry in
-            let content = item.content.isEmpty ? item.summary : item.content
-            let date = parseDate(item.published) ?? parseDate(item.updated)
-            let key = [item.guid, item.link, item.title + "|" + item.published]
-                .first { !$0.isEmpty } ?? ""
-            return FeedEntry(
-                id: file + "#" + key, feed: file, feedTitle: feedTitle,
-                title: item.title.isEmpty ? FeedText.plain(content, limit: 80) : item.title,
-                link: URL(string: item.link), date: date,
-                author: item.author.isEmpty ? nil : item.author,
-                // RSS's own split: `description` is the teaser when the article is in `content`.
-                content: content, excerpt: FeedText.plain(item.summary.isEmpty ? content : item.summary, limit: 300))
+    /// The card in `file`; throws when its JSON is not an object.
+    public static func entry(_ file: FeedCardFile) throws -> FeedEntry {
+        guard let json = file.card,
+              let card = try? JSONDecoder().decode(Card.self, from: Data(json.utf8)) else {
+            throw Failure.notACard
         }
-        let sorted = entries.enumerated().sorted { a, b in
+        let reply = file.reply
+            .flatMap { try? JSONDecoder().decode(Reply.self, from: Data($0.utf8)) }
+            .map { FeedReply(action: $0.action, text: $0.text, at: $0.at.flatMap(parseDate)) }
+        let body = card.body ?? ""
+        let title = card.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return FeedEntry(
+            id: file.source + "/" + file.id, source: file.source, cardID: file.id,
+            title: title.isEmpty ? file.id : title, body: body,
+            summary: card.summary?.isEmpty == false ? card.summary : nil,
+            date: card.date.flatMap(parseDate), link: card.link.flatMap { URL(string: $0) },
+            actions: card.actions ?? [], input: card.input, confirm: card.confirm,
+            expires: card.expires.flatMap(parseDate), outcome: card.outcome, reply: reply)
+    }
+
+    /// Newest first; undated cards last, in their given order.
+    public static func newestFirst(_ entries: [FeedEntry]) -> [FeedEntry] {
+        entries.enumerated().sorted { a, b in
             switch (a.element.date, b.element.date) {
             case let (x?, y?): return x != y ? x > y : a.offset < b.offset
             case (.some, nil): return true
@@ -78,15 +123,11 @@ public enum FeedParser {
             case (nil, nil): return a.offset < b.offset
             }
         }.map(\.element)
-        return FeedChannel(title: feedTitle, entries: sorted)
     }
 
-    /// RFC 822 (RSS) or ISO 8601 (Atom).
+    /// ISO 8601, with or without fractional seconds.
     static func parseDate(_ text: String) -> Date? {
-        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return nil }
         for formatter in isoFormatters { if let date = formatter.date(from: text) { return date } }
-        for formatter in rfc822Formatters { if let date = formatter.date(from: text) { return date } }
         return nil
     }
 
@@ -97,102 +138,22 @@ public enum FeedParser {
         return [plain, fractional]
     }()
 
-    private static let rfc822Formatters: [DateFormatter] = [
-        "EEE, d MMM yyyy HH:mm:ss Z", "EEE, d MMM yyyy HH:mm:ss zzz", "EEE, d MMM yyyy HH:mm Z",
-        "d MMM yyyy HH:mm:ss Z", "d MMM yyyy HH:mm:ss zzz", "yyyy-MM-dd",
-    ].map { format in
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        formatter.dateFormat = format
-        return formatter
+    private struct Card: Decodable {
+        let title: String?
+        let body: String?
+        let summary: String?
+        let date: String?
+        let link: String?
+        let actions: [FeedAction]?
+        let input: String?
+        let confirm: String?
+        let expires: String?
+        let outcome: String?
     }
 
-    private struct Item {
-        var title = "", link = "", guid = "", published = "", updated = ""
-        var summary = "", content = "", author = ""
+    private struct Reply: Decodable {
+        let action: String?
+        let text: String?
+        let at: String?
     }
-
-    /// Collects the channel title and each `<item>` / `<entry>`, by element name with any
-    /// namespace prefix kept (`content:encoded`, `dc:creator`).
-    private final class Collector: NSObject, XMLParserDelegate {
-        var channelTitle = ""
-        var items: [Item] = []
-        var isFeed = false
-        private var path: [String] = []
-        private var item: Item?
-        private var text = ""
-
-        func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?,
-                    qualifiedName: String?, attributes: [String: String] = [:]) {
-            if path.isEmpty { isFeed = name == "rss" || name == "feed" || name == "rdf:RDF" }
-            path.append(name)
-            text = ""
-            if name == "item" || name == "entry" { item = Item() }
-            // Atom's link is an attribute; the page link is `alternate` or has no rel.
-            if name == "link", item != nil, let href = attributes["href"],
-               (attributes["rel"] ?? "alternate") == "alternate" {
-                item?.link = href
-            }
-        }
-
-        func parser(_ parser: XMLParser, foundCharacters string: String) { text += string }
-
-        func parser(_ parser: XMLParser, foundCDATA block: Data) {
-            text += String(decoding: block, as: UTF8.self)
-        }
-
-        func parser(_ parser: XMLParser, didEndElement name: String, namespaceURI: String?,
-                    qualifiedName: String?) {
-            defer { path.removeLast(); text = "" }
-            let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            let parent = path.count >= 2 ? path[path.count - 2] : ""
-            if name == "item" || name == "entry" {
-                if let item { items.append(item) }
-                item = nil
-                return
-            }
-            guard item != nil else {
-                if name == "title", parent == "channel" || parent == "feed", channelTitle.isEmpty {
-                    channelTitle = value
-                }
-                return
-            }
-            switch name {
-            case "title" where parent == "item" || parent == "entry": item?.title = value
-            case "link" where !value.isEmpty && (item?.link.isEmpty ?? false): item?.link = value
-            case "guid", "id": item?.guid = value
-            case "pubDate", "published", "dc:date": item?.published = value
-            case "updated": item?.updated = value
-            case "description", "summary": item?.summary = value
-            case "content:encoded", "content": item?.content = value
-            case "dc:creator", "author" where !value.isEmpty && !value.contains("\n"): item?.author = value
-            case "name" where parent == "author": item?.author = value
-            default: break
-            }
-        }
-    }
-}
-
-/// HTML as the timeline shows it: tags dropped, the common entities decoded, whitespace
-/// collapsed.
-public enum FeedText {
-    public static func plain(_ html: String, limit: Int) -> String {
-        var text = html.replacingOccurrences(of: "<[^>]*>", with: " ", options: .regularExpression)
-        for (entity, character) in entities {
-            text = text.replacingOccurrences(of: entity, with: character)
-        }
-        text = text.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespaces)
-        return text.count > limit ? String(text.prefix(limit)) + "…" : text
-    }
-
-    /// Whether `content` is HTML rather than plain text: it has at least one tag.
-    public static func looksLikeHTML(_ content: String) -> Bool {
-        content.range(of: "</?[a-zA-Z][^>]*>", options: .regularExpression) != nil
-    }
-
-    // `&amp;` last, so `&amp;lt;` stays `&lt;`.
-    private static let entities = [("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""), ("&#39;", "'"),
-                                   ("&apos;", "'"), ("&nbsp;", " "), ("&amp;", "&")]
 }

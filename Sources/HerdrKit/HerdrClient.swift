@@ -294,17 +294,37 @@ public actor HerdrClient {
     }
 
     private struct FeedListResult: Decodable {
-        let feeds: [FeedFile]
+        /// Absent from a herdr that served RSS files (`feeds`) instead of cards.
+        let cards: [FeedCardFile]?
     }
 
-    /// The machine's feed files (`feed.list`): what scripts wrote to `~/.config/herdr/feeds/`,
-    /// unparsed. nil when the machine's herdr predates feeds.
-    public func feedList() async throws -> [FeedFile]? {
+    /// The machine's feed cards (`feed.list`): what scripts wrote to
+    /// `~/.config/herdr/feeds/<source>/`, unparsed. nil when the machine's herdr predates cards.
+    public func feedList() async throws -> [FeedCardFile]? {
         do {
-            return try await call("feed.list", EmptyParams(), as: FeedListResult.self).feeds
+            return try await call("feed.list", EmptyParams(), as: FeedListResult.self).cards
         } catch let error as APIError where Self.isUnknownMethod(error, "feed.list") {
             return nil
         }
+    }
+
+    private struct FeedActParams: Encodable {
+        let source: String
+        let id: String
+        let action: String?
+        let text: String?
+    }
+
+    private struct FeedActResult: Decodable {
+        let output: String?
+    }
+
+    /// Answers a feed card (`feed.act`): one of its actions and/or text. Returns what the
+    /// source's `on-reply` script printed. THROWS `APIError` when herdr refuses the answer
+    /// (`feed_already_answered`, `feed_expired`, …) or the script failed.
+    public func feedAct(source: String, id: String, action: String?, text: String?) async throws -> String? {
+        try await call("feed.act", FeedActParams(source: source, id: id, action: action, text: text),
+                       as: FeedActResult.self).output
     }
 
     struct AgentKindsResult: Decodable {

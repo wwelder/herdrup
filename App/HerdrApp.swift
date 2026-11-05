@@ -3124,18 +3124,24 @@ struct TerminalHomeView: View {
         .accessibilityValue(badgeValue(tab, badge))
     }
 
-    /// The count a section's tab carries: Gram's unread contacts, Settings' herdr update.
+    /// The count a section's tab carries: Gram's unread contacts, the feed cards waiting for
+    /// the owner, Settings' herdr update.
     private func tabBadgeCount(for tab: HomeTab, gram: Int) -> Int {
         switch tab {
         case .gram: return gram
+        case .feed: return FeedStore.shared.pendingCount
         case .settings: return settingsBadge
-        case .agents, .feed: return 0
+        case .agents: return 0
         }
     }
 
     private func badgeValue(_ tab: HomeTab, _ badge: Int) -> String {
         guard badge > 0 else { return "" }
-        return tab == .settings ? "\(badge) update" : "\(badge) unread contacts"
+        switch tab {
+        case .settings: return "\(badge) update"
+        case .feed: return "\(badge) waiting for you"
+        default: return "\(badge) unread contacts"
+        }
     }
 
     /// One activity count. Rendered only when non-zero: a rail of zeroes is noise.
@@ -3155,8 +3161,10 @@ struct TerminalHomeView: View {
         }
     }
 
+    /// Redraws the section badges when Gram's unread count or the feed's waiting cards change.
     private struct GramUnreadContent<Content: View>: View {
         @ObservedObject var unread: GramUnreadTracker
+        @ObservedObject private var feed = FeedStore.shared
         private let content: (Int) -> Content
 
         init(unread: GramUnreadTracker, @ViewBuilder content: @escaping (Int) -> Content) {
@@ -3165,6 +3173,15 @@ struct TerminalHomeView: View {
         }
 
         var body: some View { content(unread.count) }
+    }
+
+    private struct FeedPendingBadge: ViewModifier {
+        @ObservedObject private var feed = FeedStore.shared
+
+        func body(content: Content) -> some View {
+            let count = feed.pendingCount
+            content.badge(count == 0 ? nil : Text("\(count)"))
+        }
     }
 
     private struct GramUnreadBadge: ViewModifier {
@@ -3206,6 +3223,7 @@ struct TerminalHomeView: View {
                 FeedView(client: client)
                     .tag(HomeTab.feed)
                     .tabItem { Label(HomeTab.feed.label, systemImage: HomeTab.feed.icon) }
+                    .modifier(FeedPendingBadge())
 
                 SettingsView(
                     client: client,
@@ -3355,6 +3373,15 @@ struct TerminalHomeView: View {
                     gramUnread.count = GramContactIndex.unreadContactCount(in: answer.messages ?? [])
                 }
                 try? await Task.sleep(nanoseconds: 15_000_000_000)
+            }
+        }
+        // The Feed tab's badge counts the cards waiting for the owner, so the feed is fetched
+        // on every tab, not only while the Feed page is open.
+        // ponytail: a minute's poll; herdr pushing new questions would make it immediate.
+        .task {
+            while !Task.isCancelled {
+                await FeedStore.shared.load(client)
+                try? await Task.sleep(nanoseconds: 60_000_000_000)
             }
         }
         // Keep the session Live Activity (#90) in step with the herd: push a fresh
