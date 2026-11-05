@@ -1395,7 +1395,12 @@ struct GramView: View {
                 // herdr's own entry about an agent: opens that agent's pane in its session.
                 GramEventRow(message: entry.message, fontScale: uiFontScale) {
                     guard let paneID = entry.message.paneID else { return }
-                    PushCenter.shared.tapped(paneID: paneID, session: entry.message.session)
+                    // A left-edge swipe back ends on the same touch-up as this card's tap: decide
+                    // after both have run, and stay on the contacts if the swipe took us there.
+                    DispatchQueue.main.async {
+                        guard !showingContacts else { return }
+                        PushCenter.shared.tapped(paneID: paneID, session: entry.message.session)
+                    }
                 }
                 .equatable()
                 .padding(.vertical, 3)
