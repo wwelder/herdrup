@@ -293,6 +293,20 @@ public actor HerdrClient {
         try await call("fs.list_dir", FsListDirParams(path: path), as: DirListing.self)
     }
 
+    private struct FeedListResult: Decodable {
+        let feeds: [FeedFile]
+    }
+
+    /// The machine's feed files (`feed.list`): what scripts wrote to `~/.config/herdr/feeds/`,
+    /// unparsed. nil when the machine's herdr predates feeds.
+    public func feedList() async throws -> [FeedFile]? {
+        do {
+            return try await call("feed.list", EmptyParams(), as: FeedListResult.self).feeds
+        } catch let error as APIError where Self.isUnknownMethod(error, "feed.list") {
+            return nil
+        }
+    }
+
     struct AgentKindsResult: Decodable {
         let kinds: [AgentKind]
     }

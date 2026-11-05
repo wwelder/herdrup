@@ -2065,12 +2065,13 @@ struct TerminalHomeView: View {
     private enum HomeTab: String, Hashable, CaseIterable {
         /// Gram first: it is the owner's clean inbox (herdr writes every blocked question,
         /// recap and exit there), and the agents list is the raw view behind it.
-        case gram, agents, settings
+        case gram, agents, feed, settings
 
         var label: String {
             switch self {
             case .agents: return "Agents"
             case .gram: return "Gram"
+            case .feed: return "Feed"
             case .settings: return "Settings"
             }
         }
@@ -2081,6 +2082,7 @@ struct TerminalHomeView: View {
             switch self {
             case .agents: return "square.grid.2x2"
             case .gram: return "bubble.left.and.bubble.right"
+            case .feed: return "newspaper"
             case .settings: return "gearshape"
             }
         }
@@ -2419,6 +2421,12 @@ struct TerminalHomeView: View {
                     case .settings:
                         SectionTopBar(title: "Settings") { hideSidebarButton }
                         settingsIndex   // the section index; each jumps the detail pane
+                    case .feed:
+                        SectionTopBar(title: "Feed") { hideSidebarButton }
+                        FeedTimelineList()
+                            .padding(.horizontal, 8)
+                            .padding(.top, 6)
+                        Spacer(minLength: 0)
                     case .gram:
                         // Gram's Inbox/Saved selector belongs in THIS column, beside the section
                         // picker, the same way the agents list does. It used to render an empty
@@ -2606,6 +2614,8 @@ struct TerminalHomeView: View {
                              newestToken: gramNewestToken,
                              agents: gramAgents,
                              connectedSession: connectedSessionName)
+                case .feed:
+                    FeedView(client: client)
                 case .settings:
                     SettingsView(
                         client: client,
@@ -3119,7 +3129,7 @@ struct TerminalHomeView: View {
         switch tab {
         case .gram: return gram
         case .settings: return settingsBadge
-        case .agents: return 0
+        case .agents, .feed: return 0
         }
     }
 
@@ -3192,6 +3202,10 @@ struct TerminalHomeView: View {
                 agentsTab
                     .tag(HomeTab.agents)
                     .tabItem { Label(HomeTab.agents.label, systemImage: HomeTab.agents.icon) }
+
+                FeedView(client: client)
+                    .tag(HomeTab.feed)
+                    .tabItem { Label(HomeTab.feed.label, systemImage: HomeTab.feed.icon) }
 
                 SettingsView(
                     client: client,
