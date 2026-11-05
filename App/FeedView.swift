@@ -24,8 +24,12 @@ final class FeedStore: ObservableObject {
     @Published private(set) var problem: Problem?
     @Published private(set) var loaded = false
     @Published private(set) var loading = false
-    @Published var filter: Filter = .all
+    @Published var filter: Filter = .all { didSet { settle() } }
+    /// Off (the default), the timeline holds what is unread, plus what was read since it last
+    /// settled, so a row doesn't vanish under the finger or out of the reader's paging.
+    @Published var showRead = false { didSet { settle() } }
     @Published private(set) var readIDs: Set<String>
+    @Published private(set) var readSinceSettled: Set<String> = []
     @Published private(set) var starred: [FeedEntry]
 
     // ponytail: the newest 3000 read marks; older ones fall off and would show unread again.
@@ -44,13 +48,28 @@ final class FeedStore: ObservableObject {
     /// so they outlive the feed dropping them; while still served, the served copy shows.
     var visible: [FeedEntry] {
         switch filter {
-        case .all: return entries
-        case .feed(let file): return entries.filter { $0.feed == file }
+        case .all, .feed:
+            return showRead ? picked : picked.filter { !readIDs.contains($0.id) || readSinceSettled.contains($0.id) }
         case .starred:
             let served = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
             return Self.newestFirst(starred.map { served[$0.id] ?? $0 })
         }
     }
+
+    /// How many read items the unread timeline leaves out.
+    var hiddenReadCount: Int {
+        guard !showRead, filter != .starred else { return 0 }
+        return picked.count - visible.count
+    }
+
+    /// The served entries the filter picks, read or not.
+    private var picked: [FeedEntry] {
+        if case .feed(let file) = filter { return entries.filter { $0.feed == file } }
+        return entries
+    }
+
+    /// Drops what was read from the unread timeline.
+    func settle() { readSinceSettled = [] }
 
     var title: String {
         switch filter {
@@ -106,6 +125,7 @@ final class FeedStore: ObservableObject {
             if read, !readIDs.contains(entry.id) {
                 readIDs.insert(entry.id)
                 readOrder.append(entry.id)
+                readSinceSettled.insert(entry.id)
             } else if !read, readIDs.remove(entry.id) != nil {
                 readOrder.removeAll { $0 == entry.id }
             }
@@ -194,6 +214,7 @@ struct FeedView: View {
             let unread = store.visible.filter { !store.isRead($0) }
             Button {
                 store.setRead(unread, true)
+                store.settle()
             } label: {
                 Image(systemName: "checkmark.circle")
                     .font(.system(size: 17, weight: .semibold))
@@ -246,11 +267,26 @@ struct FeedView: View {
                 }
             }
             if entries.isEmpty {
-                Text(store.filter == .starred ? "Star an item to keep it here." : "Nothing here yet.")
+                Text(store.filter == .starred ? "Star an item to keep it here."
+                     : store.hiddenReadCount > 0 ? "All caught up." : "Nothing here yet.")
                     .font(Typography.app(15))
                     .foregroundStyle(Palette.textDim)
                     .listRowBackground(Palette.ground)
                     .listRowSeparator(.hidden)
+            }
+            if store.filter != .starred, store.showRead || store.hiddenReadCount > 0 {
+                Button { store.showRead.toggle() } label: {
+                    Text(verbatim: store.showRead ? "Hide read" : "Show \(store.hiddenReadCount) read")
+                        .font(Typography.app(15, .semibold))
+                        .foregroundStyle(Palette.brand)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .listRowBackground(Palette.ground)
+                .listRowSeparator(.hidden)
+                .accessibilityIdentifier("feed-show-read")
             }
             ForEach(store.sources.filter { $0.problem != nil }) { source in
                 Label {
@@ -266,7 +302,7 @@ struct FeedView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .refreshable { await store.load(client) }
+        .refreshable { store.settle(); await store.load(client) }
     }
 
     private func row(_ entry: FeedEntry) -> some View {
