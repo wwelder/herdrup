@@ -431,6 +431,12 @@ struct GramView: View {
         }
         .background(Palette.ground.ignoresSafeArea())
         .background { gramKeyboardShortcuts }
+        // An open conversation goes back to the contacts on a left-edge swipe, like its chevron.
+        .overlay {
+            if !showingContacts && !showingSaved {
+                EdgeSwipeBack { openContact = nil; showingAllMessages = false }
+            }
+        }
         #if DEBUG
         .overlay(alignment: .topLeading) { postCallsProbeView }
         // Mock knob HERDR_REDRAW_ON_TOUCH: a Gram pass at every touch-down (DebugTouchRedraw).
