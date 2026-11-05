@@ -67,7 +67,8 @@ public enum FeedParser {
                 title: item.title.isEmpty ? FeedText.plain(content, limit: 80) : item.title,
                 link: URL(string: item.link), date: date,
                 author: item.author.isEmpty ? nil : item.author,
-                content: content, excerpt: FeedText.plain(content, limit: 300))
+                // RSS's own split: `description` is the teaser when the article is in `content`.
+                content: content, excerpt: FeedText.plain(item.summary.isEmpty ? content : item.summary, limit: 300))
         }
         let sorted = entries.enumerated().sorted { a, b in
             switch (a.element.date, b.element.date) {

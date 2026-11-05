@@ -27,7 +27,8 @@ final class FeedTests: XCTestCase {
         XCTAssertEqual(newest.feedTitle, "Oura")
         XCTAssertEqual(newest.author, "oura-digest")
         XCTAssertEqual(newest.content, "<p>Deep sleep <b>1 h 41 min</b> &amp; HRV 52&nbsp;ms.</p>")
-        XCTAssertEqual(newest.excerpt, "Deep sleep 1 h 41 min & HRV 52 ms.")
+        XCTAssertEqual(newest.excerpt, "short", "the description is the teaser for the full content")
+        XCTAssertEqual(channel.entries[1].excerpt, "older")
         XCTAssertEqual(newest.date, Date(timeIntervalSince1970: 1_793_775_720))
         XCTAssertNil(channel.entries[2].date)
         XCTAssertEqual(channel.entries[2].id, "oura.xml#Undated|")
@@ -47,6 +48,7 @@ final class FeedTests: XCTestCase {
         XCTAssertEqual(entry.link, URL(string: "https://example.com/w45"))
         XCTAssertEqual(entry.author, "Herd")
         XCTAssertEqual(entry.content, "<h2>Done</h2>")
+        XCTAssertEqual(entry.excerpt, "Done")
         XCTAssertNotNil(entry.date)
     }
 
