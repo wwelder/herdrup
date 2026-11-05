@@ -18,6 +18,10 @@ final class GramColumnTests: XCTestCase {
         let tab = app.buttons["Gram"].firstMatch
         XCTAssertTrue(tab.waitForExistence(timeout: 10), app.debugDescription)
         tab.tap()
+        // Gram opens on its contact list; the column is the feed's.
+        let all = app.buttons["gram-contact-all"].firstMatch
+        XCTAssertTrue(all.waitForExistence(timeout: 10), app.debugDescription)
+        all.tap()
         return app
     }
 

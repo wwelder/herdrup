@@ -1107,6 +1107,9 @@ struct GramConversationRow: View {
 /// An entry herdr wrote for an agent: its blocked question, a finished turn's recap, or its
 /// exit. A full-width card rather than a bubble, because the agent did not say it to the
 /// owner. Tapping opens the agent's pane, where the raw log is.
+/// herdr's own entry about the conversation's agent: its question, its recap, its exit. The
+/// dot says which (amber waiting, grey answered, green finished, red exited); a tap opens
+/// the agent's pane, the raw log.
 struct GramEventRow: View, Equatable {
     let message: GramMessage
     /// Compared in `==` for the same reason as `GramRow.fontScale`.
@@ -1121,15 +1124,7 @@ struct GramEventRow: View, Equatable {
         switch message.kind {
         case .blocked: return message.resolved ? Palette.textFaint : Palette.waiting
         case .died: return Palette.died
-        case .recap, nil: return Palette.working
-        }
-    }
-
-    private var label: String {
-        switch message.kind {
-        case .blocked: return message.resolved ? "answered" : "needs you"
-        case .died: return "exited"
-        case .recap, nil: return "finished"
+        case .recap, nil: return Palette.done
         }
     }
 
@@ -1137,33 +1132,17 @@ struct GramEventRow: View, Equatable {
         Button(action: onOpen) {
             HStack(alignment: .top, spacing: 10) {
                 Circle().fill(tint).frame(width: 8, height: 8).padding(.top, 6)
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Text(message.senderName)
-                            .font(Typography.app(14, .semibold))
-                            .foregroundStyle(Palette.text)
-                            .lineLimit(1)
-                        Text(label).font(Typography.app(12)).foregroundStyle(tint)
-                        Spacer(minLength: 4)
-                        if let session = message.session {
-                            Text(session).font(Typography.app(12)).foregroundStyle(Palette.textFaint)
-                        }
-                    }
-                    Text(message.text)
-                        .font(Typography.app(14))
-                        .foregroundStyle(message.resolved ? Palette.textFaint : Palette.textDim)
-                        .lineLimit(message.kind == .blocked ? 8 : 6)
-                        .multilineTextAlignment(.leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Palette.textFaint)
-                    .padding(.top, 4)
+                Text(message.text)
+                    .font(Typography.app(14))
+                    .foregroundStyle(message.resolved ? Palette.textFaint : Palette.text)
+                    .lineLimit(message.kind == .blocked ? 8 : 12)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(12)
             .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Palette.surface))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Palette.hairline))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(message.kind == .blocked && !message.resolved ? Palette.waiting.opacity(0.6) : Palette.hairline))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -1171,5 +1150,96 @@ struct GramEventRow: View, Equatable {
         .accessibilityElement(children: .combine)
         .accessibilityHint(message.paneID == nil ? "" : "Opens the agent")
         .accessibilityIdentifier("gram-event-\(message.id)")
+    }
+}
+
+extension GramContact {
+    /// Status = colour: amber waiting on you, blue working, grey idle or gone, red exited.
+    var statusTint: Color {
+        if waiting { return Palette.waiting }
+        guard let agent else { return last?.kind == .died ? Palette.died : Palette.textFaint }
+        switch agent.agentStatus {
+        case "working": return Palette.working
+        case "blocked": return Palette.waiting
+        default: return Palette.textFaint
+        }
+    }
+}
+
+/// One agent in Gram's contact list, like a Messages row: avatar with its status dot, task
+/// name and folder, the latest message and when, and its unread count.
+struct GramContactRow: View {
+    let contact: GramContact
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Group {
+                if contact.key == .queue {
+                    Image(systemName: "tray.and.arrow.down")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Palette.textDim)
+                        .frame(width: 42, height: 42)
+                        .background(Palette.surfaceRaised, in: Circle())
+                } else {
+                    GramAvatar(name: contact.name, size: 42)
+                        .overlay(alignment: .bottomTrailing) {
+                            Circle().fill(contact.statusTint).frame(width: 12, height: 12)
+                                .overlay(Circle().stroke(Palette.ground, lineWidth: 2))
+                        }
+                }
+            }
+            .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(verbatim: contact.name)
+                        .font(Typography.app(15, .semibold))
+                        .foregroundStyle(contact.agent == nil && contact.key != .queue ? Palette.textDim : Palette.text)
+                        .lineLimit(1)
+                    if let folder = contact.folder {
+                        Text(verbatim: folder)
+                            .font(Typography.app(12))
+                            .foregroundStyle(Palette.textFaint)
+                            .lineLimit(1)
+                            .layoutPriority(-1)
+                    }
+                    Spacer(minLength: 4)
+                    if let last = contact.last {
+                        Text(verbatim: GramDates.rowTime(for: last.createdAt))
+                            .font(Typography.app(12))
+                            .foregroundStyle(contact.unread > 0 ? Palette.text : Palette.textFaint)
+                    }
+                }
+                HStack(alignment: .top, spacing: 6) {
+                    Text(verbatim: preview)
+                        .font(Typography.app(13))
+                        .foregroundStyle(contact.waiting ? Palette.waiting : Palette.textDim)
+                        .lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if contact.unread > 0 {
+                        Text(verbatim: "\(contact.unread)")
+                            .font(Typography.app(12, .semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(Palette.ground)
+                            .padding(.horizontal, 7)
+                            .frame(minWidth: 20, minHeight: 20)
+                            .background(Capsule().fill(Palette.waiting))
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("gram-contact-\(contact.id)")
+    }
+
+    private var preview: String {
+        if contact.waiting, let ask = contact.agent?.pendingRequest ?? contact.last.flatMap({ $0.kind == .blocked ? $0.text : nil }) {
+            return ask
+        }
+        guard let last = contact.last else { return "No messages yet" }
+        let text = last.text.isEmpty ? (last.attachmentPreview ?? "") : last.text
+        return last.isFromAgent ? text : "You: \(text)"
     }
 }

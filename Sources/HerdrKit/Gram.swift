@@ -116,14 +116,19 @@ public struct GramMessage: Decodable, Identifiable, Sendable, Equatable {
     /// Where the entry's agent lives, so a tap can open its pane (the raw log).
     public let paneID: String?
     public let session: String?
+    /// The agent's working directory when herdr wrote the entry or the agent sent it.
+    public let cwd: String?
     /// A `blocked` entry whose agent has since moved on.
     public let resolved: Bool
+
+    /// The last part of `cwd` ("monorepo"), nil without one.
+    public var folder: String? { GramContact.folder(of: cwd) }
 
     public init(id: String, direction: GramDirection, from: String, to: String? = nil, text: String,
                 grabbedBy: String? = nil, grabbedUnixMs: UInt64? = nil, createdUnixMs: UInt64,
                 readByOwner: Bool, file: GramFile? = nil, expiredFile: GramFile? = nil,
                 machineLabel: String? = nil, kind: GramEventKind? = nil, paneID: String? = nil,
-                session: String? = nil, resolved: Bool = false) {
+                session: String? = nil, cwd: String? = nil, resolved: Bool = false) {
         self.id = id
         self.direction = direction
         self.from = from
@@ -139,6 +144,7 @@ public struct GramMessage: Decodable, Identifiable, Sendable, Equatable {
         self.kind = kind
         self.paneID = paneID
         self.session = session
+        self.cwd = cwd
         self.resolved = resolved
     }
 
@@ -150,7 +156,7 @@ public struct GramMessage: Decodable, Identifiable, Sendable, Equatable {
         case createdUnixMs = "created_unix_ms"
         case readByOwner = "read_by_owner"
         case machineLabel = "machine_label"
-        case kind, session, resolved
+        case kind, session, cwd, resolved
         case paneID = "pane_id"
     }
 
@@ -172,6 +178,7 @@ public struct GramMessage: Decodable, Identifiable, Sendable, Equatable {
         kind = (try? c.decodeIfPresent(GramEventKind.self, forKey: .kind)) ?? nil
         paneID = try c.decodeIfPresent(String.self, forKey: .paneID)
         session = try c.decodeIfPresent(String.self, forKey: .session)
+        cwd = try c.decodeIfPresent(String.self, forKey: .cwd)
         resolved = try c.decodeIfPresent(Bool.self, forKey: .resolved) ?? false
     }
 

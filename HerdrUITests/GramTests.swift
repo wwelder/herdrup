@@ -26,6 +26,10 @@ final class GramTests: XCTestCase {
         let tab = app.buttons["Gram"].firstMatch
         XCTAssertTrue(tab.waitForExistence(timeout: 10))
         tab.tap()
+        // Gram opens on its contact list; these tests read the whole feed.
+        let all = app.buttons["gram-contact-all"].firstMatch
+        XCTAssertTrue(all.waitForExistence(timeout: 10))
+        all.tap()
         return app
     }
 

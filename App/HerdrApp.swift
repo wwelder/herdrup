@@ -2575,7 +2575,9 @@ struct TerminalHomeView: View {
                              refreshToken: gramRefreshToken,
                              readAllToken: gramReadAllToken,
                              searchText: $gramSearch,
-                             newestToken: gramNewestToken)
+                             newestToken: gramNewestToken,
+                             agents: agents,
+                             connectedSession: connectedSessionName)
                 case .settings:
                     SettingsView(
                         client: client,
@@ -3152,7 +3154,9 @@ struct TerminalHomeView: View {
                 // Both are nav-agnostic and take no onClose as tabs (no close button).
                 GramView(client: client, unread: gramUnread,
                          showingSaved: $gramShowingSaved,
-                         newestToken: gramNewestToken)
+                         newestToken: gramNewestToken,
+                         agents: agents,
+                         connectedSession: connectedSessionName)
                     .tag(HomeTab.gram)
                     .tabItem { Label(HomeTab.gram.label, systemImage: HomeTab.gram.icon) }
                     .modifier(GramUnreadBadge(unread: gramUnread))

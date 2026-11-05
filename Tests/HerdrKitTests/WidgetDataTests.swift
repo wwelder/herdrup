@@ -61,6 +61,53 @@ final class WidgetDataTests: XCTestCase {
         XCTAssertFalse(plain.resolved)
     }
 
+    func testGramContactsGroupByAgentAndListEveryRunningAgent() throws {
+        func info(_ json: String) throws -> AgentInfo { try JSONDecoder().decode(AgentInfo.self, from: Data(json.utf8)) }
+        func message(_ id: String, _ dir: GramDirection, from: String, to: String? = nil, ms: UInt64,
+                     kind: GramEventKind? = nil, pane: String? = nil, session: String? = nil,
+                     cwd: String? = nil, read: Bool = true) -> GramMessage {
+            GramMessage(id: id, direction: dir, from: from, to: to, text: id, createdUnixMs: ms, readByOwner: read,
+                        kind: kind, paneID: pane, session: session, cwd: cwd)
+        }
+        let agents = [
+            try info(#"{"pane_id":"w1:p1","agent":"claude","agent_status":"idle","terminal_title_stripped":"Assistant feature","cwd":"/home/x/Code/monorepo"}"#),
+            try info(#"{"pane_id":"w2:p1","agent":"claude","agent_status":"blocked","name":"artemis","cwd":"/home/x/seo"}"#),
+            try info(#"{"pane_id":"w3:p1","agent":"codex","agent_status":"working","subagent":true}"#),
+            try info(#"{"pane_id":"w1:p1","agent":"claude","agent_status":"working","terminal_title_stripped":"Crawl health"}"#).inSession("top-r"),
+        ]
+        // Newest first, as Gram lists them.
+        let messages = [
+            message("post", .ownerToAgent, from: "owner", to: "artemis", ms: 6),
+            message("recap", .agentToOwner, from: "Assistant feature", ms: 5, kind: .recap, pane: "w1:p1",
+                    session: "top-l", cwd: "/home/x/Code/monorepo", read: false),
+            message("sent", .agentToOwner, from: "w1:p1", ms: 4, pane: "w1:p1", session: "top-l", read: false),
+            message("old", .agentToOwner, from: "artemis", ms: 3),
+            message("gone", .agentToOwner, from: "Old task", ms: 2, kind: .recap, pane: "w9:p1", session: "top-l",
+                    cwd: "/home/x/Code"),
+            message("queue", .ownerToAgent, from: "owner", ms: 1),
+        ]
+        let index = GramContactIndex(messages: messages, agents: agents, connectedSession: "top-l")
+        let byID = Dictionary(uniqueKeysWithValues: index.contacts.map { ($0.id, $0) })
+
+        XCTAssertEqual(index.contacts.first?.id, "top-l/w2:p1", "the agent waiting on the owner comes first")
+        XCTAssertEqual(byID["top-l/w2:p1"]?.name, "artemis")
+        XCTAssertEqual(byID["top-l/w2:p1"]?.folder, "seo")
+        XCTAssertEqual(byID["top-l/w2:p1"]?.last?.id, "post", "the owner's post to a name joins that agent")
+        XCTAssertEqual(index.key(of: messages[3]), .pane(session: "top-l", paneID: "w2:p1"))
+
+        XCTAssertEqual(byID["top-l/w1:p1"]?.name, "Assistant feature")
+        XCTAssertEqual(byID["top-l/w1:p1"]?.folder, "monorepo")
+        XCTAssertEqual(byID["top-l/w1:p1"]?.unread, 2, "its recap and its own Gram")
+
+        XCTAssertEqual(byID["top-r/w1:p1"]?.name, "Crawl health", "another session's agent, with no history yet")
+        XCTAssertNil(byID["top-r/w1:p1"]?.last)
+        XCTAssertNil(byID["top-l/w3:p1"], "a subagent is no contact")
+
+        XCTAssertEqual(byID["top-l/w9:p1"]?.name, "Old task", "an agent that is gone keeps its history")
+        XCTAssertEqual(byID["top-l/w9:p1"]?.folder, "Code")
+        XCTAssertNotNil(byID["queue"])
+    }
+
     func testPendingRequestDecodes() throws {
         let json = #"{"pane_id":"w1:p1","agent_status":"blocked","pending_request":"Bash command\ngit push\nDo you want to proceed?"}"#
         let info = try JSONDecoder().decode(AgentInfo.self, from: Data(json.utf8))

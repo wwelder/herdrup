@@ -682,7 +682,12 @@ public actor HerdrClient {
     struct GramPostParams: Encodable {
         let text: String
         let to: String?
+        let paneID: String?
         let file: GramFileUploadParams?
+        enum CodingKeys: String, CodingKey {
+            case text, to, file
+            case paneID = "pane_id"
+        }
     }
 
     /// The owner posts a message to agents. `to == nil` posts to the shared
@@ -691,13 +696,15 @@ public actor HerdrClient {
     /// `attachment` attaches a file previously uploaded with `gramUploadFile`; the
     /// text may be empty when a file is attached. Returns the stored message.
     @discardableResult
+    /// `paneID` addresses the agent in that pane of this client's session instead of `to`:
+    /// it reaches an agent with no name (herdr from the gram inbox).
     public func gramPost(
-        text: String, to: String? = nil, attachment: GramFileAttachment? = nil
+        text: String, to: String? = nil, paneID: String? = nil, attachment: GramFileAttachment? = nil
     ) async throws -> GramMessage {
         let file = attachment.map {
             GramFileUploadParams(uploadID: $0.uploadID, name: $0.name, mime: $0.mime)
         }
-        return try await call("gram.post", GramPostParams(text: text, to: to, file: file),
+        return try await call("gram.post", GramPostParams(text: text, to: to, paneID: paneID, file: file),
                               as: GramMessageResult.self).message
     }
 
@@ -1106,7 +1113,7 @@ public actor HerdrClient {
         let file = attachment.map {
             GramFileUploadParams(uploadID: $0.uploadID, name: $0.name, mime: $0.mime)
         }
-        return try await call("gram.post", GramPostParams(text: text, to: to, file: file),
+        return try await call("gram.post", GramPostParams(text: text, to: to, paneID: nil, file: file),
                               as: GuestGramPostResult.self).message
     }
 

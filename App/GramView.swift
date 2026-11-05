@@ -51,6 +51,16 @@ struct GramView: View {
     /// tab bar, the iPad section bar): the shown feed, the inbox or Saved, goes to its newest
     /// message at the bottom, not the system's scroll-to-top (see `WindowedBottomFeed`).
     var newestToken: Int = 0
+    /// Every session's running agents, so each is a contact before it has written.
+    var agents: [AgentInfo] = []
+    /// The session the app is connected to, whose roster rows carry no `session`.
+    var connectedSession: String = "default"
+
+    /// The agent whose conversation is open; nil shows the contact list.
+    @State private var openContact: GramContact.Key?
+    /// Every message in one feed (the contact list's "All messages" row).
+    @State private var showingAllMessages = false
+    private var showingContacts: Bool { openContact == nil && !showingAllMessages }
 
     /// The last server snapshot (newest first) and the owner's just-posted messages
     /// not yet reflected in a snapshot. `messages` composes them so a background poll
@@ -318,14 +328,32 @@ struct GramView: View {
     /// badge lie or hide a message from a Read-all pass. Do not fold the filter into
     /// `messages` itself.
     private var visibleMessages: [GramMessage] {
-        guard !search.isEmpty else { return messages }
-        return messages.filter { message in
+        guard !search.isEmpty else { return threadMessages }
+        return threadMessages.filter { message in
             message.text.localizedCaseInsensitiveContains(search)
                 || message.from.localizedCaseInsensitiveContains(search)
                 || message.senderName.localizedCaseInsensitiveContains(search)
                 || (message.to ?? "").localizedCaseInsensitiveContains(search)
                 || ((message.file ?? message.expiredFile)?.name ?? "").localizedCaseInsensitiveContains(search)
         }
+    }
+
+    /// The open conversation's messages, or every message without one.
+    /// ponytail: the index is rebuilt per read, O(loaded messages); cache it if a long store stutters.
+    private var threadMessages: [GramMessage] {
+        guard let openContact else { return messages }
+        let index = contactIndex
+        return messages.filter { index.key(of: $0) == openContact }
+    }
+
+    private var contactIndex: GramContactIndex {
+        GramContactIndex(messages: messages, agents: agents, connectedSession: connectedSession)
+    }
+
+    private var openedContact: GramContact? {
+        guard let openContact else { return nil }
+        return contactIndex.contacts.first { $0.key == openContact }
+            ?? GramContact(key: openContact, name: "", folder: nil, agent: nil, last: nil, unread: 0, waiting: false)
     }
 
     /// Saved rows after the same filter. `SavedGram` has no `to`, so sender + text + filename.
@@ -352,7 +380,7 @@ struct GramView: View {
     }
 
     private var feedTip: FeedTip? {
-        messages.max { $0.createdUnixMs < $1.createdUnixMs }
+        threadMessages.max { $0.createdUnixMs < $1.createdUnixMs }
             .map { FeedTip(id: $0.id, createdUnixMs: $0.createdUnixMs) }
     }
 
@@ -452,6 +480,15 @@ struct GramView: View {
             // During a search only the reader's own arrival at the top searches older
             // history: a short result list shows the sentinel at once, which asks nothing.
             feedVisibility.pageArmed = new.isEmpty
+        }
+        // Opening another conversation draws its newest window and lands at its bottom.
+        .onChange(of: showingContacts) { _, _ in
+            renderLimit = Self.renderWindow
+            didInitialScroll = false
+            showingNewMessages = false
+            pageAnchorID = nil
+            draft = ""
+            pickedAgent = nil
         }
         // The "Gram ›" pill: Read all, the agents seen in Gram, and the shared queue.
         .sheet(isPresented: $showingAgentsSheet) { agentsSheet }
@@ -716,7 +753,19 @@ struct GramView: View {
     /// The unread count, when there is one.
     @ViewBuilder
     private var headerLeading: some View {
-        if unreadCount > 0 {
+        if !showingContacts && !showingSaved {
+            Button { openContact = nil; showingAllMessages = false } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(Palette.text)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .gramGlass(Capsule())
+            .accessibilityLabel("Contacts")
+            .accessibilityIdentifier("gram-back")
+        } else if unreadCount > 0 {
             unreadCountText
                 .padding(.horizontal, 13)
                 .frame(minWidth: 44, minHeight: 44)
@@ -740,6 +789,7 @@ struct GramView: View {
                                    target: CGSize(width: 40, height: 44)) { toggleSearch() }
             }
             // A filled bookmark means the Saved section is showing.
+            if openContact == nil {
             Button {
                 withAnimation(.easeInOut(duration: 0.15)) { showingSaved.toggle() }
             } label: {
@@ -754,6 +804,7 @@ struct GramView: View {
             .accessibilityLabel("Saved")
             .accessibilityIdentifier("gram-saved-toggle")
             .accessibilityAddTraits(showingSaved ? .isSelected : [])
+            }
         }
         .padding(.horizontal, 2)
         .gramGlass(Capsule())
@@ -768,7 +819,53 @@ struct GramView: View {
     /// The most recent distinct agent senders' avatars over the "Gram ›" pill (or "Saved ›",
     /// see `headerTitle`), which opens the agents sheet (Read all, the agents seen in Gram,
     /// the shared queue).
+    @ViewBuilder
     private var headerIdentity: some View {
+        if let contact = openedContact {
+            contactIdentity(contact)
+        } else {
+            gramIdentity
+        }
+    }
+
+    /// The open conversation's agent: its avatar over its name and folder. A tap opens its
+    /// pane, the raw log.
+    private func contactIdentity(_ contact: GramContact) -> some View {
+        Button {
+            if case .pane(let session, let paneID) = contact.key {
+                PushCenter.shared.tapped(paneID: paneID, session: session)
+            }
+        } label: {
+            VStack(spacing: -6) {
+                GramAvatar(name: contact.name, size: 34).accessibilityHidden(true)
+                HStack(spacing: 5) {
+                    Circle().fill(contact.statusTint).frame(width: 7, height: 7)
+                    Text(verbatim: contact.name)
+                        .font(Typography.app(13, .semibold))
+                        .foregroundStyle(Palette.text)
+                        .lineLimit(1)
+                    if let folder = contact.folder {
+                        Text(verbatim: folder)
+                            .font(Typography.app(12))
+                            .foregroundStyle(Palette.textFaint)
+                            .lineLimit(1)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .frame(height: 24)
+                .frame(maxWidth: 230)
+                .gramGlass(Capsule())
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .allowsHitTesting(contact.agent != nil)
+        .accessibilityLabel(contact.name)
+        .accessibilityHint(contact.agent == nil ? "" : "Opens the agent")
+        .accessibilityIdentifier("gram-contact-header")
+    }
+
+    private var gramIdentity: some View {
         Button { showingAgentsSheet = true } label: {
             VStack(spacing: -6) {
                 GramAvatarCluster(names: messages.filter(\.isFromAgent).map(\.from))
@@ -922,7 +1019,7 @@ struct GramView: View {
 
     private var content: some View {
         Group {
-            if showingSaved { savedContent } else { inboxContent }
+            if showingSaved { savedContent } else if showingContacts { contactsContent } else { inboxContent }
         }
         // Let a drag on the message feed dismiss the keyboard too, so the composer
         // never gets stuck covering the tab bar with no way out.
@@ -1175,6 +1272,72 @@ struct GramView: View {
         }
     }
 
+    /// The contact list: one row per agent (every running agent, and any with history), the
+    /// one waiting on the owner first. A row opens that agent's conversation.
+    @ViewBuilder
+    private var contactsContent: some View {
+        let contacts = contactIndex.contacts.filter { contact in
+            search.isEmpty || contact.name.localizedCaseInsensitiveContains(search)
+                || (contact.folder ?? "").localizedCaseInsensitiveContains(search)
+                || (contact.last?.text ?? "").localizedCaseInsensitiveContains(search)
+        }
+        if case .loaded = effectivePhase, !contacts.isEmpty || !search.isEmpty {
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    if search.isEmpty { allMessagesRow }
+                    ForEach(contacts) { contact in
+                        Button { openContact = contact.key } label: { GramContactRow(contact: contact) }
+                            .buttonStyle(.plain)
+                        Rectangle().fill(Palette.hairlineQuiet).frame(height: 1).padding(.leading, 70)
+                    }
+                    if contacts.isEmpty {
+                        Text("No agent matches “\(search)”.")
+                            .font(Typography.app(13))
+                            .foregroundStyle(Palette.textFaint)
+                            .padding(.top, 40)
+                    }
+                    if shouldShowSetupCard { setupCard.padding(16) }
+                }
+                .conversationColumn()
+            }
+            .refreshable { await manualRefresh() }
+            .accessibilityIdentifier("gram-contacts")
+        } else {
+            inboxContent
+        }
+    }
+
+    /// The contact list's first row: every message in one feed, the shared queue and @ composer
+    /// with it.
+    private var allMessagesRow: some View {
+        Button { showingAllMessages = true } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "tray.full")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Palette.textDim)
+                    .frame(width: 42, height: 42)
+                    .background(Palette.surfaceRaised, in: Circle())
+                Text("All messages")
+                    .font(Typography.app(15, .semibold))
+                    .foregroundStyle(Palette.text)
+                Spacer(minLength: 4)
+                if unreadCount > 0 {
+                    Text(verbatim: "\(unreadCount) unread")
+                        .font(Typography.app(12))
+                        .foregroundStyle(Palette.waiting)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Palette.textFaint)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("gram-contact-all")
+    }
+
     /// The inbox feed's top sentinel: the feed is oldest-first and opens at the bottom, so it
     /// comes on screen only when the reader scrolls up past the oldest loaded message, which is
     /// exactly when the next page is worth fetching (see `requestOlderPage`). A failed page says
@@ -1227,6 +1390,7 @@ struct GramView: View {
                     PushCenter.shared.tapped(paneID: paneID, session: entry.message.session)
                 }
                 .equatable()
+                .padding(.vertical, 3)
             } else {
             GramRow(
                 message: entry.message,
@@ -1370,7 +1534,7 @@ struct GramView: View {
                     isEnabled: !draftDictating,
                     isFocused: composerFocused,
                     onFocusChange: { composerFocused = $0 },
-                    placeholder: "Queue, or @ an agent…",
+                    placeholder: openedContact.map { "Message \($0.name)…" } ?? "Queue, or @ an agent…",
                     accessibilityIdentifier: "gram-composer-input",
                     capitalization: .sentences,
                     autocorrection: .default,
@@ -1552,7 +1716,7 @@ struct GramView: View {
     /// Every agent matching the "@" being typed at the caret, names starting with the query
     /// first; empty when no "@" is being typed there (or nothing matches).
     private var mentionMatches: [GramAgent] {
-        guard let active = GramMention.activeQuery(in: draft, cursor: draftCaret) else { return [] }
+        guard openContact == nil, let active = GramMention.activeQuery(in: draft, cursor: draftCaret) else { return [] }
         let query = active.query.lowercased()
         guard !query.isEmpty else { return gramAgents }
         let starting = gramAgents.filter { $0.name.lowercased().hasPrefix(query) }
@@ -1581,6 +1745,8 @@ struct GramView: View {
         case ambiguous(String)
         /// A leading "@token" that names no agent in Gram ("" for a bare "@").
         case unknown(String)
+        /// The open conversation's agent.
+        case contact(GramContact.Key)
     }
 
     private struct DraftAddress {
@@ -1600,6 +1766,9 @@ struct GramView: View {
     /// never quietly sent to the shared queue (its files could be secrets). No mention at all:
     /// the shared queue.
     private var draftAddress: DraftAddress {
+        if let openContact {
+            return DraftAddress(route: .contact(openContact), body: draft, leading: false, accent: nil)
+        }
         let names = mentionNames
         let resolved = GramMention.resolve(draft, knownNames: names)
         let leading = resolved.recipient != nil && resolved.body != draft
@@ -1624,7 +1793,7 @@ struct GramView: View {
     /// Why the draft cannot be sent as it stands, if it cannot.
     private static func hint(for route: DraftRoute) -> String? {
         switch route {
-        case .queue, .agent: return nil
+        case .queue, .agent, .contact: return nil
         case .ambiguous(let name): return "Several agents are called \(name): pick one"
         case .unknown(let token):
             return token.isEmpty ? "Pick an agent after @" : "No agent called @\(token) in Gram"
@@ -1636,7 +1805,7 @@ struct GramView: View {
         switch draftAddress.route {
         case .queue: return agent == nil
         case .agent(let addressed): return addressed.from == agent?.from
-        case .ambiguous, .unknown: return false
+        case .ambiguous, .unknown, .contact: return false
         }
     }
 
@@ -1667,7 +1836,7 @@ struct GramView: View {
         guard !sending, !loadingPhoto, !draftDictating else { return false }
         let address = draftAddress
         switch address.route {
-        case .queue, .agent: break
+        case .queue, .agent, .contact: break
         case .ambiguous, .unknown: return false
         }
         // A bare "@vetrina" has no message: the body without the mention must say something.
@@ -1921,7 +2090,8 @@ struct GramView: View {
     /// sentinel do its work on the first draw, and it is small enough that the open
     /// costs a few tens of KB instead of the ~900 KB the whole store weighs. Older
     /// pages are the same size: a scroll that keeps going should keep costing the same.
-    static let pageSize = 40
+    /// 150 rather than 40: the contact list is built from the loaded window.
+    static let pageSize = 150
 
     /// Ceiling for the head refresh, matching the daemon's own `GRAM_LIST_MAX_LIMIT`.
     /// A reader who has paged past it keeps scrolling through the sentinel; the refresh
@@ -2043,11 +2213,25 @@ struct GramView: View {
         // than the one addressed when Send was tapped. The field is also disabled while
         // sending, but capturing is the real guarantee. A draft that names no agent, or
         // names several, is never sent (to the shared queue or anywhere).
-        let to: String?
+        // A pane is addressed through its own session's server, where its id means it.
+        var to: String?
+        var paneID: String?
+        var poster = client
         switch address.route {
         case .queue: to = nil
         case .agent(let agent): to = agent.from
         case .ambiguous, .unknown: return
+        case .contact(.queue): to = nil
+        case .contact(.name(let name)): to = name
+        case .contact(.pane(let session, let pane)):
+            paneID = pane
+            if session != connectedSession {
+                guard let scoped = client.forSession(session == "default" ? nil : session) else {
+                    sendError = "Can't reach session \(session)."
+                    return
+                }
+                poster = scoped
+            }
         }
         // A file with no caption is fine; an empty text-only message is not.
         guard (!text.isEmpty || !files.isEmpty), !sending else { return }
@@ -2068,7 +2252,7 @@ struct GramView: View {
         // Text-only: the unchanged single-message path.
         guard !files.isEmpty else {
             do {
-                let posted = try await client.gramPost(text: text, to: to)
+                let posted = try await poster.gramPost(text: text, to: to, paneID: paneID)
                 draft = ""
                 pendingPosts.removeAll { $0.id == posted.id }
                 pendingPosts.insert(posted, at: 0)
@@ -2088,8 +2272,8 @@ struct GramView: View {
         // never re-sends the caption onto a different file.
         let captionID = files.first?.id
         let sender = uploader.sender(client: client, into: $attachedFiles, post: { file, attachment in
-            let posted = try await client.gramPost(
-                text: file.id == captionID ? text : "", to: to, attachment: attachment)
+            let posted = try await poster.gramPost(
+                text: file.id == captionID ? text : "", to: to, paneID: paneID, attachment: attachment)
             // Optimistic: kept in `pendingPosts`, so a concurrent poll's snapshot
             // cannot drop it; de-duped by id, reconciled once the server reflects it.
             pendingPosts.removeAll { $0.id == posted.id }
