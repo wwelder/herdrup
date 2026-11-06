@@ -45,6 +45,8 @@ final class FeedStore: ObservableObject {
     /// What a card's `on-reply` script printed, until its own `outcome` says more.
     @Published private(set) var outputs: [String: String] = [:]
     @Published var confirming: Choice?
+    /// A card to open in the reader, from a tapped question push.
+    @Published var opening: String?
     @Published var failure: String?
 
     // ponytail: the newest 3000 read marks; older ones fall off and would show unread again.
@@ -225,6 +227,12 @@ struct FeedView: View {
             .navigationDestination(for: String.self) { id in
                 FeedReaderView(entryID: id, client: client)
             }
+        }
+        .onChange(of: store.opening, initial: true) { _, card in
+            guard let card else { return }
+            store.opening = nil
+            path = [card]
+            Task { await store.load(client) }
         }
         .confirmationDialog(
             store.confirming?.entry.confirm ?? "",

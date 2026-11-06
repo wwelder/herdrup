@@ -24,6 +24,7 @@ final class AgentVoiceCommandTests: XCTestCase {
 
     func testCommandIsLiteralForLoginShellsAndRefusesPanesItCannotName() {
         XCTAssertTrue(CitadelTransport.isShellLiteral(CitadelTransport.agentVoiceScript))
+        XCTAssertTrue(CitadelTransport.isShellLiteral(CitadelTransport.agentVoiceSettleScript))
         XCTAssertNil(CitadelTransport.agentVoiceCommand(pane: "studio/w1:p4", session: nil))
         XCTAssertNil(CitadelTransport.agentVoiceCommand(pane: "w1:p1'", session: nil))
     }
@@ -52,6 +53,16 @@ final class AgentVoiceCommandTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent("pcm").path))
     }
 
+    func testSettleWaitsOutListeningAndTheLastWords() throws {
+        // Reads 1-2 still listen; read 3 brings the last word; then the prompt holds still.
+        try fake("herdr", #"n=$(($(cat "$HOME/reads" 2>/dev/null || echo 0)+1)); echo $n > "$HOME/reads"; echo "✽ Working $n"; [ $n -le 2 ] && echo "listening…"; echo "──────────"; if [ $n -le 2 ]; then echo "❯ say hi"; else echo "❯ say hi please"; fi; echo "──────────"; echo "-- INSERT --""#)
+        let (status, stderr) = try run(pane: "w1:p1", session: nil, audio: Data(),
+                                       script: CitadelTransport.agentVoiceSettleScript)
+        XCTAssertEqual(status, 0, stderr)
+        // A changing line outside the prompt box (Claude's spinner) does not hold it up.
+        XCTAssertEqual(try String(contentsOf: home.appendingPathComponent("reads"), encoding: .utf8), "6\n")
+    }
+
     // MARK: - helpers
 
     private func fake(_ name: String, _ body: String) throws {
@@ -66,8 +77,9 @@ final class AgentVoiceCommandTests: XCTestCase {
     }
 
     /// `/bin/sh -c <command>`, as sshd runs the exec request, with `audio` as stdin.
-    private func run(pane: String, session: String?, audio: Data) throws -> (Int32, String) {
-        let command = try XCTUnwrap(CitadelTransport.agentVoiceCommand(pane: pane, session: session))
+    private func run(pane: String, session: String?, audio: Data,
+                     script: String = CitadelTransport.agentVoiceScript) throws -> (Int32, String) {
+        let command = try XCTUnwrap(CitadelTransport.agentVoiceCommand(pane: pane, session: session, script: script))
         let input = home.appendingPathComponent("stdin")
         try audio.write(to: input)
         let errors = home.appendingPathComponent("stderr")

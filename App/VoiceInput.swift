@@ -442,6 +442,10 @@ struct MicButton: View {
     /// Set for an agent with its own voice mode: the mic streams to it and the agent
     /// transcribes into its prompt (`SpeechDictator.start(agent:)`); the field is untouched.
     var agentVoice: (@MainActor (AsyncStream<Data>) async throws -> Void)?
+    /// Bumped by the parent to stop recording, e.g. when the owner sends mid-dictation.
+    var stopToken: Int = 0
+    /// The parent is waiting on the agent to write the last words: a spinner, not the mic.
+    var finishing: Bool = false
 
     @Environment(\.scenePhase) private var scenePhase
     /// The enclosing composer's level meter, when there is one; it drives the waveform
@@ -465,7 +469,7 @@ struct MicButton: View {
             }
         } label: {
             ZStack {
-                if dictator.state == .requesting {
+                if dictator.state == .requesting || finishing {
                     ProgressView().controlSize(.small).tint(Palette.textDim)
                         .frame(width: 44, height: 44)
                 } else {
@@ -479,8 +483,9 @@ struct MicButton: View {
             .animation(.spring(response: 0.3, dampingFraction: 0.75), value: dictator.state)
         }
         .buttonStyle(.plain)
+        .disabled(finishing)
         .background { if dictator.isRecording { VoiceRipples() } }
-        .accessibilityLabel(dictator.isRecording ? "Stop dictation" : "Dictate")
+        .accessibilityLabel(finishing ? "Finishing dictation" : dictator.isRecording ? "Stop dictation" : "Dictate")
         .sensoryFeedback(.impact(flexibility: .soft, intensity: 0.7), trigger: dictator.isRecording)
         // Live-append the transcript to the bound field as partial results arrive.
         .onChange(of: dictator.transcript) { _, t in
@@ -493,6 +498,7 @@ struct MicButton: View {
             recording?.wrappedValue = dictator.isBusy
             if state == .recording { meter?.begin() } else if !dictator.isBusy { meter?.end() }
         }
+        .onChange(of: stopToken) { _, _ in dictator.stop() }
         .onChange(of: isActive) { _, active in if !active { dictator.stop() } }
         .onChange(of: scenePhase) { _, phase in if phase != .active { dictator.stop() } }
         .onDisappear { dictator.stop() }

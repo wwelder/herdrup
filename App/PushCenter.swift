@@ -30,6 +30,9 @@ final class PushCenter: ObservableObject {
     /// opens the Gram page then clears it. Held here so a cold-launch tap (app was closed) survives
     /// until the view can act, exactly like `pendingPaneID`.
     @Published var pendingGram: Bool = false
+    /// A tapped agent question (`feed` in the payload, `<source>/<id>`): the home view opens
+    /// the Feed tab and hands the card to `FeedStore.opening`. Held like `pendingGram`.
+    @Published var pendingFeed: String?
     /// A tapped push for an agent someone shared with this phone (`herdr_guest` in the payload).
     /// The root view opens that share and its home opens the Gram tab or the terminal, then
     /// clears it. Never routed to an owner screen.

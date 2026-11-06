@@ -123,6 +123,9 @@ struct LiveTerminalView: UIViewRepresentable {
     /// Called after a terminal tap requests direct PTY input. The parent owns the
     /// SwiftUI focus state so a reply submission can dismiss the keyboard reliably.
     var onTerminalFocusRequest: () -> Void = {}
+    /// Asked when the reader types Return into the terminal; true takes the key, and it is
+    /// not sent (the host submits it itself once the agent's voice has settled).
+    var takesReturn: () -> Bool = { false }
     /// Called on the main actor when the live stream ends (nil = closed cleanly), before
     /// the view decides whether to reconnect. Lets a host react to why it ended.
     var onStreamEnded: (Error?) -> Void = { _ in }
@@ -207,6 +210,7 @@ struct LiveTerminalView: UIViewRepresentable {
         let surface = TerminalSurfaceView(terminal: view)
         context.coordinator.onNavigate = onNavigate
         context.coordinator.onTerminalFocusRequest = onTerminalFocusRequest
+        context.coordinator.takesReturn = takesReturn
         context.coordinator.onStreamEnded = onStreamEnded
         // BEFORE attach, which starts the stream: the first frame must be recorded, or a
         // pane that connects while the app is backgrounding looks stale on return.
@@ -227,6 +231,7 @@ struct LiveTerminalView: UIViewRepresentable {
         let terminalView = uiView.terminal
         context.coordinator.onNavigate = onNavigate
         context.coordinator.onTerminalFocusRequest = onTerminalFocusRequest
+        context.coordinator.takesReturn = takesReturn
         context.coordinator.onStreamEnded = onStreamEnded
         // Live accessors, refreshed every pass: a captured Bool would be a snapshot of
         // the state as it was when this body ran, which is exactly the race that makes
@@ -1340,6 +1345,8 @@ struct LiveTerminalView: UIViewRepresentable {
         /// Requests SwiftUI terminal-input focus after a tap. The parent controls
         /// actual responder ownership so it can dismiss the keyboard after Send.
         var onTerminalFocusRequest: (() -> Void)?
+        /// See `LiveTerminalView.takesReturn`. Refreshed by `updateUIView`.
+        var takesReturn: (() -> Bool)?
         /// See `LiveTerminalView.onStreamEnded`. Refreshed by `updateUIView`.
         var onStreamEnded: ((Error?) -> Void)?
         /// Publishes tail state to the host (see `LiveTerminalView.onTailStateChange`).
@@ -3610,6 +3617,7 @@ struct LiveTerminalView: UIViewRepresentable {
             // retain first responder while selection/focus transitions settle.
             guard !stopped, !viewOnly, foreground, directFocusIntended,
                   let v = view, v.isFirstResponder else { return }
+            if data.elementsEqual([13]), takesReturn?() == true { return }
             userTookControl()
             TypingLatencyRecorder.shared.keyPressed()
             let batch = enqueueInput(String(decoding: data, as: UTF8.self))

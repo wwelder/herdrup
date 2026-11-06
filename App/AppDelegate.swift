@@ -125,6 +125,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         switch PushTapTarget(userInfo: userInfo) {
         case .guest(let route): PushCenter.shared.tappedGuest(route)
         case .ownerGram: PushCenter.shared.tappedGram()
+        case .ownerFeed(let card): PushCenter.shared.pendingFeed = card
         case .ownerPane(let paneID, let session): PushCenter.shared.tapped(paneID: paneID, session: session)
         case .droppedGuest, .none: break
         }

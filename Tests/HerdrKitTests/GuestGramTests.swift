@@ -398,6 +398,7 @@ final class GuestGramTests: XCTestCase {
                        "the owner's keys on a guest push are ignored")
 
         XCTAssertEqual(PushTapTarget(userInfo: ["gram": true, "pane_id": ""]), .ownerGram)
+        XCTAssertEqual(PushTapTarget(userInfo: ["feed": "agents/ask-1", "pane_id": ""]), .ownerFeed("agents/ask-1"))
         XCTAssertEqual(PushTapTarget(userInfo: ["pane_id": "w1:p1"]), .ownerPane("w1:p1"))
         XCTAssertEqual(PushTapTarget(userInfo: ["pane_id": "w1:p1", "session": "bot-r"]),
                        .ownerPane("w1:p1", session: "bot-r"))

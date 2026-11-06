@@ -478,6 +478,12 @@ public actor HerdrClient {
         try await citadel.streamAgentVoice(pane: pane, audio: buffers)
     }
 
+    /// Call after stopping `streamAgentVoice`: returns once Claude has written the last
+    /// words into `pane`'s prompt (or ~7 s pass), so a Return sent next submits all of them.
+    public func settleAgentVoice(pane: String) async {
+        await (transport as? CitadelTransport)?.settleAgentVoice(pane: pane)
+    }
+
     struct RegisterDeviceParams: Encodable {
         let deviceToken: String
         let platform: String

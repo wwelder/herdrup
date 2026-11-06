@@ -2332,11 +2332,12 @@ struct TerminalHomeView: View {
         // would front this session's same-id pane instead.
     }
 
-    /// A tapped gram push selects the Gram tab. Like `applyDeepLink`, it is consumed on
-    /// the onChange path (app already up) AND post-load (a cold-launch tap set the flag
-    /// before this view existed). Leaving it armed lets a later trigger re-invoke it.
-    private func openGramIfPending() {
-        guard push.pendingGram else { return }
+    /// A tapped gram push selects the Gram tab; a tapped question, the Feed tab at its
+    /// card. Like `applyDeepLink`, it is consumed on the onChange path (app already up)
+    /// AND post-load (a cold-launch tap set the flag before this view existed). Leaving
+    /// it armed lets a later trigger re-invoke it.
+    private func openPushedTabIfPending() {
+        guard push.pendingGram || push.pendingFeed != nil else { return }
         // The fork notice (a fullScreenCover) is up: don't switch under it; its
         // onDismiss re-invokes this once it's gone.
         if showForkNotice { return }
@@ -2346,11 +2347,18 @@ struct TerminalHomeView: View {
         // onDismiss re-invokes this once it's gone (and a queued spawn wins there,
         // deliberately leaving the push pending rather than yanking the new terminal).
         if activeCover != nil || pendingOpenSlot != nil { return }
-        push.pendingGram = false
-        // Drop any fronted terminal so the Gram tab is visible (the pane stays MOUNTED,
+        // Drop any fronted terminal so the tab is visible (the pane stays MOUNTED,
         // so reopening it later is instant).
         frontID = nil
-        selectedTab = .gram
+        if push.pendingGram {
+            push.pendingGram = false
+            selectedTab = .gram
+        } else {
+            // An agent's question: the Feed tab, open at its card.
+            FeedStore.shared.opening = push.pendingFeed
+            push.pendingFeed = nil
+            selectedTab = .feed
+        }
     }
 
     /// Swipe-page from the fronted pane to its prev/next sibling (clamped). `open()`s the
@@ -3410,13 +3418,14 @@ struct TerminalHomeView: View {
         .onAppear { seedFromSessionCache() }
         .task(id: showAllSessions) { await watchSessions() }
         // First launch: show the gestures tutorial once — but NOT over a pending push
-        // deep-link (openGramIfPending / applyDeepLink would dismiss it to show Gram or
+        // deep-link (openPushedTabIfPending / applyDeepLink would dismiss it to show Gram or
         // the pane, wasting the one-shot). Burn the seen-flag ONLY when we present.
         .onAppear {
             if shouldShowFirstRunGesturesHelp,
                 !hasSeenGesturesHelp,
                 activeCover == nil,
                 !push.pendingGram,
+                push.pendingFeed == nil,
                 push.pendingPaneID == nil
             {
                 hasSeenGesturesHelp = true
@@ -3432,7 +3441,8 @@ struct TerminalHomeView: View {
             paneOpenedFromGram = false
             selectedTab = .gram
         }
-        .onChange(of: push.pendingGram) { _, newValue in if newValue { openGramIfPending() } }
+        .onChange(of: push.pendingGram) { _, newValue in if newValue { openPushedTabIfPending() } }
+        .onChange(of: push.pendingFeed) { _, newValue in if newValue != nil { openPushedTabIfPending() } }
         // ONE item-based sheet, not two stacked isPresented presentations (stacked
         // presentation modifiers on a single view are historically fragile). A SHEET
         // (not a full-screen cover) so it presents bottom-up and swipe-down dismisses
@@ -3447,7 +3457,7 @@ struct TerminalHomeView: View {
                 pendingOpenSlot = nil
                 open(slot)
             } else {
-                openGramIfPending()
+                openPushedTabIfPending()
             }
             // A fork notice deferred behind this sheet fires now — but only if nothing
             // else claimed the foreground, so the fullScreenCover never races the sheet.
@@ -3482,7 +3492,7 @@ struct TerminalHomeView: View {
         // arrived WHILE it was up (a gram push / pane deep-link deferred against it),
         // so those never armed a competing presentation over the cover.
         .fullScreenCover(isPresented: $showForkNotice, onDismiss: {
-            openGramIfPending()
+            openPushedTabIfPending()
             applyDeepLink()
         }) {
             ForkNoticeView(onDismiss: { showForkNotice = false })
@@ -5039,7 +5049,7 @@ struct TerminalHomeView: View {
             // prune the FRONT pane, so the reader isn't yanked off an exited terminal.
             updateLiveAgentBookkeeping()
             applyDeepLink(afterLoad: true)   // agents + roster loaded — front any pending push target
-            openGramIfPending()              // a cold-launch gram tap opens the Gram page once loaded
+            openPushedTabIfPending()              // a cold-launch gram tap opens the Gram page once loaded
 
             // Refresh account labels independently. A transient failure, or an older
             // daemon without accounts.list, keeps the freshest successful value. The
@@ -5865,6 +5875,11 @@ struct TerminalPaneContent: View {
     /// overwritten by the next partial) and suppresses the ctrl-chord interception (so a
     /// single-char dictation partial can't be misread as a control chord).
     @State private var replyDictating = false
+    /// Bumped to stop the mic (`MicButton.stopToken`).
+    @State private var voiceStopToken = 0
+    /// Between a send while Claude has the mic and the submit: the mic is a spinner while
+    /// Claude writes its last words (`submitAfterVoice`).
+    @State private var voiceFinishing = false
     /// Focus of the reply field, so the software keyboard can be DISMISSED — via the
     /// keyboard-toolbar chevron or a tap on the (read-only) terminal.
     @State private var replyFocused = false
@@ -5994,6 +6009,23 @@ struct TerminalPaneContent: View {
         let client = client, pane = paneID
         return { audio in try await client.streamAgentVoice(pane: pane, audio: audio) }
     }
+    /// Claude has the mic and is recording, or a send is waiting for its last words.
+    private var agentVoiceLive: Bool { (replyDictating && agentVoice != nil) || voiceFinishing }
+
+    /// A send while Claude has the mic (Send, the Return cap, the keyboard's Return): stop
+    /// recording, wait with a spinner on the mic until Claude has written the last words
+    /// into its prompt, then submit: the reply's text if there is any, else Return. Return
+    /// sent at once submitted the prompt without its last words.
+    private func submitAfterVoice() {
+        guard !voiceFinishing else { return }
+        voiceFinishing = true
+        voiceStopToken += 1
+        Task {
+            await client.settleAgentVoice(pane: paneID)
+            voiceFinishing = false
+            if hasReplyContent { sendTapped() } else { send(.key("Enter")) }
+        }
+    }
 
     private var hasReplyContent: Bool {
         !replyAttachments.isEmpty || !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -6075,6 +6107,11 @@ struct TerminalPaneContent: View {
                                  onTerminalFocusRequest: {
                                      replyFocused = false
                                      terminalInputFocused = true
+                                 },
+                                 takesReturn: {
+                                     guard agentVoiceLive else { return false }
+                                     submitAfterVoice()
+                                     return true
                                  },
                                  jumpToTailToken: jumpToTailToken,
                                  onTailStateChange: { terminalAtTail = $0 },
@@ -6807,7 +6844,8 @@ struct TerminalPaneContent: View {
             ComposerTextField(
                 text: $reply,
                 // Dictation owns the field; an upload must not resign its first responder.
-                isEnabled: !replyDictating,
+                // Claude's own voice writes into its prompt instead, so the field stays live.
+                isEnabled: !replyDictating || agentVoice != nil,
                 isFocused: replyFocused,
                 onFocusChange: { focused in
                     replyFocused = focused
@@ -6817,6 +6855,7 @@ struct TerminalPaneContent: View {
                     handleReplyChange(old: oldValue, new: newValue)
                 },
                 onReturn: { currentText in
+                    if agentVoiceLive { submitAfterVoice(); return }
                     guard !sending, !replyDictating,
                           !replyAttachments.isEmpty
                             || !currentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -6849,15 +6888,17 @@ struct TerminalPaneContent: View {
                 if let agentVoice {
                     MicButton(text: $reply,
                               isActive: isForeground && !autoDelivering, recording: $replyDictating,
-                              onStart: { ctrlArmed = false }, agentVoice: agentVoice)
+                              onStart: { ctrlArmed = false }, agentVoice: agentVoice,
+                              stopToken: voiceStopToken, finishing: voiceFinishing)
                         .fixedSize()
                         .disabled(sending || autoDelivering)
                 }
-                if !hasReplyContent {
+                if !hasReplyContent && !agentVoiceLive {
                     SavedPromptsMenu(onSelect: usePrompt)
                         .disabled(sending || autoDelivering || replyDictating)
                 } else {
                     Button {
+                        if agentVoiceLive { submitAfterVoice(); return }
                         sendTapped()
                         terminalInputFocused = false
                         if UIDevice.current.userInterfaceIdiom == .phone {
@@ -6865,10 +6906,10 @@ struct TerminalPaneContent: View {
                             replyFocused = false
                         }
                     } label: {
-                        ComposerActionIcon(image: Image("ComposerSend"), primary: true, busy: sending,
+                        ComposerActionIcon(image: Image("ComposerSend"), primary: true, busy: sending || voiceFinishing,
                                            progress: replyUploader.sendProgress(replyAttachments, sending: sending))
                     }
-                    .disabled(!canSend)
+                    .disabled(!canSend && !(agentVoiceLive && !voiceFinishing && !sending))
                     .fixedSize()
                     .accessibilityLabel("Send reply")
                     .accessibilityIdentifier("terminal-send-button")
@@ -7138,6 +7179,10 @@ struct TerminalPaneContent: View {
         // control-bar caps: this funnel also carries the reply submit, the saved-prompt
         // send and the raw sequences. The automatic pre-fill delivery is excluded on
         // purpose — nobody touched anything, so there is no user act to honour.
+        if action == .key("Enter"), agentVoiceLive {
+            submitAfterVoice()
+            return
+        }
         if !autoDelivering { userInputToken += 1 }
         if case .submitText(let text) = action, !replyAttachments.isEmpty {
             sendPromptWithAttachments(text, attachments: replyAttachments)
