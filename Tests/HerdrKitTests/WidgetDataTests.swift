@@ -38,20 +38,21 @@ final class WidgetDataTests: XCTestCase {
         XCTAssertNil(try list("working").activityContent.question)
     }
 
-    func testASubagentGetsNoRowAndCountsTowardNothing() throws {
+    func testASubagentFoldsUnderItsCallerAndCountsTowardNothing() throws {
         func info(_ json: String) throws -> AgentInfo { try JSONDecoder().decode(AgentInfo.self, from: Data(json.utf8)) }
         let list = AgentList(agents: [
-            try info(#"{"pane_id":"w1:p1","agent":"claude","agent_status":"working"}"#),
-            try info(#"{"pane_id":"w1:p2","agent":"codex","agent_status":"blocked","subagent":true}"#),
-        ], livePaneIDs: ["w1:p1", "w1:p2"])
-        XCTAssertEqual(list.rows.map(\.info.paneID), ["w1:p1"])
-        XCTAssertEqual(list.activityContent.needsYouCount, 0, "a blocked subagent is its orchestrator's to answer")
+            try info(#"{"pane_id":"w1:p1","workspace_id":"w1","agent":"claude","agent_status":"idle"}"#),
+            try info(#"{"pane_id":"w1:p2","workspace_id":"w1","agent":"codex","agent_status":"working","subagent":true}"#),
+            try info(#"{"pane_id":"w1:p3","workspace_id":"w1","agent":"codex","agent_status":"blocked","subagent":true}"#),
+            try info(#"{"pane_id":"w2:p1","workspace_id":"w2","agent":"claude","agent_status":"working"}"#),
+            try info(#"{"pane_id":"w3:p1","workspace_id":"w3","agent":"codex","agent_status":"idle","subagent":true}"#),
+        ], livePaneIDs: ["w1:p1", "w1:p2", "w1:p3", "w2:p1", "w3:p1"])
+        XCTAssertEqual(list.subagents["w1:p1"]?.map(\.info.paneID), ["w1:p3", "w1:p2"], "most urgent first")
+        // The idle caller sorts with its blocked subagent; a subagent without a caller stands alone.
+        XCTAssertEqual(list.rows.map(\.info.paneID), ["w1:p1", "w2:p1", "w3:p1"])
+        XCTAssertEqual(list.sections.first?.group, .needsYou)
+        XCTAssertEqual(list.activityContent.needsYouCount, 0, "a blocked subagent is its caller's to answer")
         XCTAssertEqual(list.activityContent.workingCount, 1)
-        let shown = AgentList(agents: [
-            try info(#"{"pane_id":"w1:p1","agent":"claude","agent_status":"working"}"#),
-            try info(#"{"pane_id":"w1:p2","agent":"codex","agent_status":"working","subagent":true}"#),
-        ], livePaneIDs: ["w1:p1", "w1:p2"], showSubagents: true)
-        XCTAssertEqual(shown.rows.map(\.info.paneID).sorted(), ["w1:p1", "w1:p2"], "the owner's filter shows subagents")
     }
 
     func testAnIdleAgentWithBackgroundWorkIsRunning() throws {

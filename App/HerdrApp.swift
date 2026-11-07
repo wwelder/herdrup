@@ -2090,8 +2090,8 @@ struct TerminalHomeView: View {
     /// The All view: every running session's agents in one list (the default); a session
     /// pill filters to that session. Mirrored in `sessionCache` so a session switch keeps it.
     @State private var showAllSessions = true
-    /// The roster's filter: also list subagents (`AgentInfo.isSubagent`), hidden by default.
-    @AppStorage("agents.showSubagents") private var showSubagents = false
+    /// Callers whose folded subagents are shown (`AgentList.subagents`); all start folded.
+    @State private var openCallers: Set<String> = []
     /// The other running sessions' agents, tagged with their session (`AgentInfo.inSession`).
     @State private var otherRosters: [String: [AgentInfo]] = [:]
     /// A client per other running session (same SSH connection), so their rows open and
@@ -2331,7 +2331,7 @@ struct TerminalHomeView: View {
                 || ($0.name ?? "").localizedCaseInsensitiveContains(search)
                 || ($0.terminalTitleStripped ?? "").localizedCaseInsensitiveContains(search)
         }
-        return AgentList(agents: filtered, livePaneIDs: livePaneIDs, showSubagents: showSubagents).sections
+        return AgentList(agents: filtered, livePaneIDs: livePaneIDs).sections
     }
 
     /// The on-screen item directly above the open sidebar row: its bottom separator would
@@ -3648,23 +3648,6 @@ struct TerminalHomeView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Clear search")
             }
-            if showSubagents || agents.contains(where: \.isSubagent) {
-                Button {
-                    showSubagents.toggle()
-                    let latest = rosterRefreshState().latest
-                    receiveRoster(agents: latest.agents, accounts: latest.accounts)
-                } label: {
-                    Image(systemName: showSubagents ? "line.3.horizontal.decrease.circle.fill"
-                                                    : "line.3.horizontal.decrease.circle")
-                        .font(.system(size: 17))
-                        .foregroundStyle(showSubagents ? Palette.text : Palette.textDim)
-                        .frame(width: 32, height: 32)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(showSubagents ? "Hide subagents" : "Show subagents")
-                .accessibilityIdentifier("agent-filter-subagents")
-            }
         }
         .padding(.horizontal, 10)
         .frame(height: height)
@@ -3892,8 +3875,7 @@ struct TerminalHomeView: View {
         let snapshot = AgentRosterSnapshot(
             agents: merged,
             accounts: accounts,
-            livePaneIDs: livePaneIDs,
-            showSubagents: showSubagents
+            livePaneIDs: livePaneIDs
         )
         let current = rosterRefreshState()
         let next = current.receiving(snapshot)
@@ -4160,11 +4142,52 @@ struct TerminalHomeView: View {
                 case let .agent(row, starred, folderID):
                     agentRowButton(row, starred: starred, indented: folderID != nil,
                                    aboveOpen: aboveOpen, siblings: siblings)
+                    if let subagents = fullList.subagents[row.id] {
+                        subagentsRow(row, subagents)
+                        if openCallers.contains(row.id) {
+                            ForEach(subagents) { subagent in
+                                agentRowButton(subagent, starred: false, indented: true,
+                                               aboveOpen: aboveOpen, siblings: siblings)
+                            }
+                        }
+                    }
                 case let .folder(summary):
                     folderRow(summary, aboveOpen: aboveOpen)
                 }
             }
         }
+    }
+
+    /// The fold under a caller, as herdr's agent panel draws it: how many subagents it runs,
+    /// dotted in the most urgent one's colour. Tap shows or folds them.
+    private func subagentsRow(_ caller: AgentRow, _ subagents: [AgentRow]) -> some View {
+        let open = openCallers.contains(caller.id)
+        let urgent = subagents.first?.group ?? .idle
+        let dot: Color = switch urgent {
+        case .needsYou: Palette.waiting
+        case .stopped: Palette.died
+        case .working, .unrecognised: Palette.working
+        case .done, .idle: Palette.textFaint
+        }
+        return Button {
+            if open { openCallers.remove(caller.id) } else { openCallers.insert(caller.id) }
+        } label: {
+            HStack(spacing: DesignTokens.Space.stackSmall) {
+                Image(systemName: open ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.textFaint)
+                Circle().fill(dot).frame(width: 7, height: 7)
+                Text("\(subagents.count) subagent\(subagents.count == 1 ? "" : "s")")
+                    .font(Typography.app(13)).foregroundStyle(Palette.textDim)
+                Spacer(minLength: 0)
+            }
+            .padding(.leading, DesignTokens.Space.rowLeadIndented)
+            .frame(height: 30)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(subagents.count) subagents, most urgent \(urgent.label)")
+        .accessibilityValue(open ? "expanded" : "collapsed")
+        .accessibilityIdentifier("agent-subagents-\(caller.info.paneID)")
     }
 
     /// One agent in the list: tap opens its pane, swipe right stars it or moves it to a

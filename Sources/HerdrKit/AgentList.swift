@@ -233,6 +233,9 @@ public struct AgentList: Equatable, Sendable {
     /// most-recently-archived first.
     public let archived: [AgentRow]
 
+    /// Each caller's folded subagents, by the caller's row id, most urgent first.
+    public let subagents: [String: [AgentRow]]
+
     /// What the top of the screen says. Counts the `needsYou` GROUP, not the retained
     /// status. Reading `status.isBlocked` directly meant a blocked agent whose pane had
     /// since vanished sorted into `.stopped` and made `isQuiet` true while still
@@ -421,7 +424,7 @@ public struct AgentList: Equatable, Sendable {
     }
 
     public static func == (a: AgentList, b: AgentList) -> Bool {
-        a.rows == b.rows && a.archived == b.archived
+        a.rows == b.rows && a.archived == b.archived && a.subagents == b.subagents
     }
 
     /// Builds the list from an `agent.list` response.
@@ -431,10 +434,7 @@ public struct AgentList: Equatable, Sendable {
     /// census available", and every row is treated as live — the ONLY safe
     /// reading, since inferring death from missing evidence would mark every
     /// agent stopped the moment a census failed to arrive.
-    public init(agents: [AgentInfo], livePaneIDs: Set<String>? = nil, showSubagents: Bool = false) {
-        // A worker another agent spawned is that agent's business: unless the owner's filter
-        // shows subagents, it gets no row and counts toward nothing, like herdr's agent panel.
-        let agents = showSubagents ? agents : agents.filter { !$0.isSubagent }
+    public init(agents: [AgentInfo], livePaneIDs: Set<String>? = nil) {
         // Archived agents are pulled out first: they never appear in a live status
         // section and never count toward "needs you" / quiet. A released pane is not
         // "live", so they carry isLive = false; their own section renders them.
@@ -443,8 +443,24 @@ public struct AgentList: Equatable, Sendable {
         self.archived = archivedInfos
             .map { AgentRow(info: $0, isLive: false) }
             .sorted { ($0.info.archived?.at ?? "") > ($1.info.archived?.at ?? "") }
-        let rows = liveInfos.map { info in
+        let allRows = liveInfos.map { info in
             AgentRow(info: info, isLive: livePaneIDs.map { $0.contains(info.paneID) } ?? true)
+        }
+        // A subagent folds under its caller, the agent of its session and workspace that is
+        // not one (herdr's workspace lead), as herdr's agent panel folds it. Folded, it counts
+        // toward nothing. With no caller listed it keeps a row of its own.
+        func workspace(_ row: AgentRow) -> String? {
+            row.info.workspaceID.map { "\(row.info.session ?? "")|\($0)" }
+        }
+        var callerOf: [String: String] = [:]
+        for row in allRows where !row.info.isSubagent {
+            if let key = workspace(row), callerOf[key] == nil { callerOf[key] = row.id }
+        }
+        var folded: [String: [AgentRow]] = [:]
+        let rows = allRows.filter { row in
+            guard row.info.isSubagent, let caller = workspace(row).flatMap({ callerOf[$0] }) else { return true }
+            folded[caller, default: []].append(row)
+            return false
         }
         // Group order first (the screen's primary signal — "does anything need me").
         // WITHIN a group, latest state change first, as herdr's agent panel sorts
@@ -456,15 +472,22 @@ public struct AgentList: Equatable, Sendable {
             statusAnchorUnixMs(statusSinceUnixMs: r.info.statusSinceUnixMs,
                                lastCompletedUnixMs: r.info.lastCompletedTurn?.completedUnixMs) ?? Int64.min
         }
-        let ordered = rows.sorted { a, b in
-            if a.group != b.group { return a.group < b.group }
+        func before(_ a: AgentRow, _ b: AgentRow, _ ga: AgentGroup, _ gb: AgentGroup) -> Bool {
+            if ga != gb { return ga < gb }
             let ta = changed(a), tb = changed(b)
             if ta != tb { return ta > tb }
             return a.info.id < b.info.id
         }
+        let subagents = folded.mapValues { $0.sorted { before($0, $1, $0.group, $1.group) } }
+        // A caller sorts where the most urgent of it and its subagents would.
+        func placement(_ row: AgentRow) -> AgentGroup {
+            min(row.group, subagents[row.id]?.first?.group ?? row.group)
+        }
+        let ordered = rows.sorted { before($0, $1, placement($0), placement($1)) }
         self.rows = ordered
+        self.subagents = subagents
         self.sections = AgentGroup.allCases.compactMap { group in
-            let inGroup = ordered.filter { $0.group == group }
+            let inGroup = ordered.filter { placement($0) == group }
             return inGroup.isEmpty ? nil : (group, inGroup)
         }
     }
@@ -485,12 +508,11 @@ public struct AgentRosterSnapshot: Equatable, Sendable {
     public init(
         agents: [AgentInfo] = [],
         accounts: [CredentialAccount] = [],
-        livePaneIDs: Set<String>? = nil,
-        showSubagents: Bool = false
+        livePaneIDs: Set<String>? = nil
     ) {
         self.agents = agents
         self.accounts = accounts
-        self.agentList = AgentList(agents: agents, livePaneIDs: livePaneIDs, showSubagents: showSubagents)
+        self.agentList = AgentList(agents: agents, livePaneIDs: livePaneIDs)
     }
 }
 
