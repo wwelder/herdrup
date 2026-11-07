@@ -2,7 +2,6 @@ import SwiftUI
 import Foundation
 import UIKit    // UIPasteboard (Copy diagnostics)
 import UniformTypeIdentifiers
-import StoreKit // Product / tip jar (Settings' Support section)
 import UserNotifications // notification authorization status (Settings notify section)
 import HerdrKit
 
@@ -17,10 +16,6 @@ struct HerdrApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     init() {
-        // Start the tip-jar transaction listener at launch (mirroring PushCenter), so a
-        // transaction that completes outside a purchase() call — e.g. an Ask-to-Buy
-        // approved later — is finished promptly instead of waiting for Settings to open.
-        _ = TipStore.shared
         // Chat's column width became the width Chat and Gram share (#541): keep the reader's.
         ConversationColumnWidth.migrate(.standard)
         #if DEBUG
@@ -45,8 +40,9 @@ struct HerdrApp: App {
                         GuestInviteRouter.shared.open(url.absoluteString)
                         return
                     }
+                    // A Live Activity or home-screen widget tap; the widget names the session.
                     guard let paneID = AgentActivityDeepLink.agentID(from: url) else { return }
-                    PushCenter.shared.tapped(paneID: paneID)
+                    PushCenter.shared.tapped(paneID: paneID, session: AgentActivityDeepLink.session(from: url))
                 }
         }
     }
@@ -265,7 +261,7 @@ struct RootView: View {
         guard let client = explicitClient ?? self.client, let token = push.deviceToken else { return }
         let routeCredentials = explicitCredentials ?? credentials
         Task { @MainActor in
-            let capability = await PushCenter.relay.capability(kind: .device, token: token)
+            let capability = await PushCenter.relay?.capability(kind: .device, token: token)
             // Read the prefs AFTER enrolling (which can take up to its timeout), so a toggle
             // flipped meanwhile is not overwritten by this call's older snapshot.
             let p = PushCenter.Prefs.current
@@ -289,7 +285,7 @@ struct RootView: View {
     private func registerActivityPush(with explicitClient: HerdrClient? = nil) {
         guard let client = explicitClient ?? self.client, let token = liveActivity.pushToken else { return }
         Task {
-            let capability = await PushCenter.relay.capability(kind: .activity, token: token)
+            let capability = await PushCenter.relay?.capability(kind: .activity, token: token)
             try? await client.registerActivity(token: token, relayCapability: capability)
         }
     }
@@ -765,6 +761,10 @@ struct ConnectView: View {
     /// The scan-to-connect sheet (#126) — the path that needs no key, no host address and
     /// no knowledge of what a daemon is.
     @State private var showingPairing = false
+    /// The saved host last opened from this list, reopened at launch.
+    @AppStorage("hosts.lastOpened") private var lastOpened = ""
+    /// Launch reopens `lastOpened` once per process: going back to the list stays there.
+    private static var reopenedLastHost = false
 
     var body: some View {
         ZStack {
@@ -805,6 +805,10 @@ struct ConnectView: View {
         .sheet(item: $editorTarget) { target in
             HostEditor(target: target, store: savedHosts) { creds in
                 editorTarget = nil
+                let endpoint = HostEndpoint(host: creds.host, port: creds.port)
+                if let saved = savedHosts.hosts.first(where: {
+                    $0.username == creds.username && HostEndpoint.parse($0.host) == endpoint
+                }) { lastOpened = saved.id.uuidString }
                 onConnect(creds)
             }
         }
@@ -817,6 +821,7 @@ struct ConnectView: View {
                 }
             }
         }
+        .onAppear(perform: reopenLastHost)
         .sheet(isPresented: $showingInviteScan, onDismiss: {
             guard let invite = scannedInvite else { return }
             scannedInvite = nil
@@ -1116,6 +1121,19 @@ struct ConnectView: View {
         }
     }
 
+    /// At launch, connect straight to the host last opened, when its secret is on this phone.
+    private func reopenLastHost() {
+        #if DEBUG
+        guard ScreenshotMock.mode == nil else { return }
+        #endif
+        guard !Self.reopenedLastHost else { return }
+        Self.reopenedLastHost = true
+        guard connecting == nil,
+              let saved = savedHosts.hosts.first(where: { $0.id.uuidString == lastOpened }),
+              storedSecret(saved) != nil else { return }
+        tapSavedHost(saved)
+    }
+
     /// One-tap connect from a saved host. If the secret is not on this device, open the
     /// editor in reconnect mode, which says so and asks for it, rather than a silent dead tap.
     private func tapSavedHost(_ saved: SavedHost) {
@@ -1135,6 +1153,7 @@ struct ConnectView: View {
             creds = SSHCredentials(host: ep.host, port: ep.port, username: saved.username,
                                    password: password, remoteSocketPath: "")
         }
+        lastOpened = saved.id.uuidString
         onConnect(creds)
     }
 }
@@ -1878,9 +1897,8 @@ struct TerminalHomeView: View {
         case rename(AgentFolder)
     }
     @State private var activeCover: ActiveCover?
-    /// The selected bottom tab (Agents / Gram / Settings). Terminal is NOT a tab — it
-    /// fronts a keep-mounted pane OVER the tabs (see PaneKeepAliveContainer). Gram and
-    /// Settings were modal covers before #88; they are persistent tabs now.
+    /// The selected bottom tab (Agents / Feed / Settings). Terminal is NOT a tab — it
+    /// fronts a keep-mounted pane OVER the tabs (see PaneKeepAliveContainer).
     @State private var selectedTab: HomeTab = .agents
     /// On iPad (regular width) the app becomes a NavigationSplitView (sidebar + detail);
     /// on iPhone / narrow it stays the tab bar + terminal-over layout. Same views either way.
@@ -1976,31 +1994,6 @@ struct TerminalHomeView: View {
     /// re-renders at the new `Typography.scale` when it changes — WITHOUT the
     /// identity churn `.id()` would cause (which reset the tab / terminal panes).
     @AppStorage("ui.fontScale") private var uiFontScale: Double = 1.0
-    /// Unread agent→owner grams, badged on the Gram tab. Session-scoped; written
-    /// by GramView while visible and by an ambient poll (below) while it isn't.
-    /// Only the badge/sidebar readers observe this object: publishing a count must not
-    /// rebuild the tab host while a message's context menu is handling a touch.
-    @State private var gramUnread = GramUnreadTracker()
-    /// Gram's Inbox/Saved selection, owned HERE rather than inside `GramView` because on regular
-    /// width the selector is rendered in the split view's sidebar — a sibling column of the page
-    /// it drives. Shared by both layouts, so the phone's header toggle and the sidebar rows read
-    /// and write the same value.
-    @State private var gramShowingSaved = false
-    /// One-shot signal for the sidebar's refresh button. A sidebar button cannot call `GramView`'s
-    /// async `load`, so it bumps this and the page's `onChange` performs the reload.
-    @State private var gramRefreshToken = 0
-    /// One-shot signal for the sidebar's Read-all button, same reason as `gramRefreshToken`:
-    /// a sidebar button cannot call `GramView`'s async mark-read pass directly.
-    @State private var gramReadAllToken = 0
-    /// One-shot signal for a tap on Gram while it is already selected (the phone's tab bar, the
-    /// iPad's section bar and rail): the feed goes to its newest message (`GramView.newestToken`).
-    @State private var gramNewestToken = 0
-    /// The Gram search on regular width. The field sits at the top of the sidebar (a sibling
-    /// column of the page it filters), so the text lives here and reaches `GramView` as a
-    /// binding; the phone keeps the page's own search toggle instead.
-    @State private var gramSearch = ""
-    /// Focus of the sidebar's Gram search, so ⌘F can put the cursor in it.
-    @FocusState private var gramSearchFocused: Bool
     /// First launch shows the gestures tutorial once; the "Gestures" tab reopens it.
     @AppStorage("hasSeenGesturesHelp") private var hasSeenGesturesHelp = false
 
@@ -2027,13 +2020,13 @@ struct TerminalHomeView: View {
     ///
     /// ONE definition of the sections (#360): the iPhone `TabView`, the iPad/Mac sidebar
     /// bar and the minimised rail all read label and icon from here, so they cannot drift.
-    private enum HomeTab: Hashable, CaseIterable {
-        case agents, gram, settings
+    private enum HomeTab: String, Hashable, CaseIterable {
+        case agents, feed, settings
 
         var label: String {
             switch self {
             case .agents: return "Agents"
-            case .gram: return "Gram"
+            case .feed: return "Feed"
             case .settings: return "Settings"
             }
         }
@@ -2043,7 +2036,7 @@ struct TerminalHomeView: View {
         var icon: String {
             switch self {
             case .agents: return "square.grid.2x2"
-            case .gram: return "bubble.left.and.bubble.right"
+            case .feed: return "newspaper"
             case .settings: return "gearshape"
             }
         }
@@ -2081,10 +2074,7 @@ struct TerminalHomeView: View {
     /// Re-entry guard while a `New Terminal` split is in flight (also dims the row).
     @State private var creatingTerminal = false
     private static let maxLivePanes = 3
-    // Only the quiet tail (idle) starts collapsed — the model forbids a
-    // collapsed group from ever hiding something that wants attention.
-    @State private var collapsed: Set<AgentGroup> = Set(AgentGroup.allCases.filter { $0.startsCollapsed })
-    /// The Terminals section starts collapsed like the idle agents — a compact header row
+    /// The Terminals section starts collapsed — a compact header row
     /// (TERMINALS · N) the reader expands on demand, so it never competes with the herd.
     @State private var terminalsCollapsed = true
     /// The Archived section (issue #173) starts collapsed too — archived agents are
@@ -2097,6 +2087,16 @@ struct TerminalHomeView: View {
     @State private var glyphFieldSpotlight = TerminalGlyphFieldView.Spotlight()
     /// The machine's running herdr sessions (#347); the pills show with two or more.
     @State private var runningSessions: [HerdrSession] = []
+    /// The All view: every running session's agents in one list (the default); a session
+    /// pill filters to that session. Mirrored in `sessionCache` so a session switch keeps it.
+    @State private var showAllSessions = true
+    /// Callers whose folded subagents are shown (`AgentList.subagents`); all start folded.
+    @State private var openCallers: Set<String> = []
+    /// The other running sessions' agents, tagged with their session (`AgentInfo.inSession`).
+    @State private var otherRosters: [String: [AgentInfo]] = [:]
+    /// A client per other running session (same SSH connection), so their rows open and
+    /// act on their own herdr server.
+    @State private var sessionClients: [String: HerdrClient] = [:]
     /// Needs-you counts in the sessions this home is NOT on, by session name.
     @State private var otherSessionsNeedYou: [String: Int] = [:]
 
@@ -2116,7 +2116,8 @@ struct TerminalHomeView: View {
         case .needsYou, .unrecognised: tone = .waiting
         case .stopped: tone = .died
         case .working: tone = .working
-        case .idle: tone = row.status == .done ? .done : .dim
+        case .done: tone = .done
+        case .idle: tone = .dim
         }
         return .init(id: row.id, text: "\(row.title) › \(subtitle(row.info))", tone: tone)
     }
@@ -2133,7 +2134,7 @@ struct TerminalHomeView: View {
     /// appended (MRU) and the least-recently-used non-front slot is evicted past the cap
     /// (removal unmounts it → `Coordinator.stop()` closes its stream + SSH connection).
     private func open(_ slot: PaneSlot) {
-        if let i = slots.firstIndex(where: { $0.paneID == slot.paneID }) {
+        if let i = slots.firstIndex(where: { $0.id == slot.id }) {
             // Already mounted → keep it warm (instant), but REFRESH its metadata: a re-open from
             // the list carries a fresh title/agent/roster. Identity is the pane id (`.id`), so
             // replacing the struct does NOT remount the pane or reset its @State. Guard so a spawn
@@ -2143,7 +2144,8 @@ struct TerminalHomeView: View {
             slots.append(PaneSlot(paneID: existing.paneID, title: slot.title,
                                   agent: slot.agent ?? existing.agent,
                                   initialReply: existing.initialReply,
-                                  siblings: slot.siblings.isEmpty ? existing.siblings : slot.siblings))
+                                  siblings: slot.siblings.isEmpty ? existing.siblings : slot.siblings,
+                                  client: existing.client))
         } else {
             slots.append(slot)
             while slots.count > Self.maxLivePanes {
@@ -2155,7 +2157,19 @@ struct TerminalHomeView: View {
         // would otherwise leave the tab bar drawing over it. Selecting Agents keeps every
         // open path (row tap, deep-link, spawn, swipe-paging) consistent.
         selectedTab = .agents
-        frontID = slot.paneID
+        frontID = slot.id
+    }
+
+    /// The client for a row's own herdr session (the connected one unless the All view
+    /// listed it from another).
+    private func sessionClient(for info: AgentInfo) -> HerdrClient {
+        info.session.flatMap { sessionClients[$0] } ?? client
+    }
+
+    /// A pane slot for an agent, opened on that agent's own herdr session.
+    private func paneSlot(_ info: AgentInfo, title: String, siblings: [AgentInfo]) -> PaneSlot {
+        PaneSlot(paneID: info.paneID, title: title, agent: info, initialReply: "",
+                 siblings: siblings, client: info.session.flatMap { sessionClients[$0] })
     }
 
     /// Open a fresh plain-shell terminal: `pane.split` with NO `agent.start` yields a booting
@@ -2188,7 +2202,7 @@ struct TerminalHomeView: View {
             return
         case .stop(let row):
             await perform(verb: "stop", title: row.title) {
-                try await client.closePane(paneID: row.info.paneID)
+                try await sessionClient(for: row.info).closePane(paneID: row.info.paneID)
             }
         case .archive(let row):
             await perform(verb: "archive", title: row.title) {
@@ -2196,7 +2210,7 @@ struct TerminalHomeView: View {
                 // `by: "api"` and no reason — the same shape it writes for a pane that
                 // merely died, so a deliberate archive would be indistinguishable from
                 // bookkeeping to anything reading the record later.
-                try await client.archiveAgent(target: row.info.paneID,
+                try await sessionClient(for: row.info).archiveAgent(target: row.info.paneID,
                                               reason: HerdrKit.appArchiveReason,
                                               by: HerdrKit.appArchiveActor)
             }
@@ -2204,8 +2218,9 @@ struct TerminalHomeView: View {
             // Resume the preserved session into a fresh pane, restoring the agent's
             // identity. Target by name (or terminal id): the pane id no longer resolves.
             let target = unarchiveTarget(row.info)
+            let rowClient = sessionClient(for: row.info)
             await perform(verb: "unarchive", title: row.title) {
-                try await client.unarchiveAgent(target: target)
+                try await rowClient.unarchiveAgent(target: target)
             }
         }
     }
@@ -2237,11 +2252,18 @@ struct TerminalHomeView: View {
     /// gone (the pane then shows its exited state). Consumes the target so it fires once.
     private func applyDeepLink(afterLoad: Bool = false) {
         guard let paneID = push.pendingPaneID else { return }
+        // A push names the herdr session that sent it. Another session's agent is listed (in
+        // All, turned back on for it) under a session-qualified id, as the Live Activity's
+        // `AgentInfo.id` already is; this session's, or a server too old to say, is bare.
+        let otherSession = push.pendingPaneSession.flatMap { $0 == connectedSessionName ? nil : $0 }
+        if otherSession != nil, !showAllSessions { setShowAllSessions(true) }
+        let target = otherSession.map { "\($0)/\(paneID)" } ?? paneID
         // A refresh completed during momentum scrolling may be buffered rather than
         // displayed. An explicit push should still resolve against that newest data;
         // reading it here does not publish or relayout the roster under the gesture.
-        let sourceRoster = afterLoad ? (pendingRoster.snapshot ?? displayedRoster) : displayedRoster
-        let info = sourceRoster.agents.first { $0.paneID == paneID }
+        let sourceRoster = afterLoad || otherSession != nil
+            ? (pendingRoster.snapshot ?? displayedRoster) : displayedRoster
+        let info = sourceRoster.agents.first { $0.id == target }
         // On the onChange path (not post-load), only open once the target RESOLVES against the roster.
         // If it doesn't — an empty roster (first load) OR a stale one (agent spawned from the desktop
         // since the last refresh) — opening now would give a bare paneID title AND a sibling list that
@@ -2254,16 +2276,23 @@ struct TerminalHomeView: View {
             return
         }
         push.pendingPaneID = nil
+        push.pendingPaneSession = nil
         let siblings = sourceRoster.agentList.rows.filter(\.isLive).map(\.info)
-        open(PaneSlot(paneID: paneID, title: info?.displayName ?? paneID, agent: info,
-                      initialReply: "", siblings: siblings))
+        if let info {
+            open(paneSlot(info, title: info.displayName, siblings: siblings))
+        } else if otherSession == nil {
+            open(PaneSlot(paneID: paneID, title: "agent", agent: nil, initialReply: "", siblings: siblings))
+        }
+        // Another session's agent that isn't listed has no client here: opening its bare pane id
+        // would front this session's same-id pane instead.
     }
 
-    /// A tapped gram push selects the Gram tab. Like `applyDeepLink`, it is consumed on
-    /// the onChange path (app already up) AND post-load (a cold-launch tap set the flag
-    /// before this view existed). Leaving it armed lets a later trigger re-invoke it.
-    private func openGramIfPending() {
-        guard push.pendingGram else { return }
+    /// A tapped question selects the Feed tab at its card. Like `applyDeepLink`, it is
+    /// consumed on the onChange path (app already up)
+    /// AND post-load (a cold-launch tap set the flag before this view existed). Leaving
+    /// it armed lets a later trigger re-invoke it.
+    private func openPushedTabIfPending() {
+        guard push.pendingFeed != nil else { return }
         // The fork notice (a fullScreenCover) is up: don't switch under it; its
         // onDismiss re-invokes this once it's gone.
         if showForkNotice { return }
@@ -2273,21 +2302,21 @@ struct TerminalHomeView: View {
         // onDismiss re-invokes this once it's gone (and a queued spawn wins there,
         // deliberately leaving the push pending rather than yanking the new terminal).
         if activeCover != nil || pendingOpenSlot != nil { return }
-        push.pendingGram = false
-        // Drop any fronted terminal so the Gram tab is visible (the pane stays MOUNTED,
+        // Drop any fronted terminal so the tab is visible (the pane stays MOUNTED,
         // so reopening it later is instant).
         frontID = nil
-        selectedTab = .gram
+        FeedStore.shared.opening = push.pendingFeed
+        push.pendingFeed = nil
+        selectedTab = .feed
     }
 
     /// Swipe-page from the fronted pane to its prev/next sibling (clamped). `open()`s the
     /// neighbour — instant if it is already mounted.
     private func navigate(from slot: PaneSlot, delta: Int) {
-        guard let i = slot.siblings.firstIndex(where: { $0.paneID == frontID }),
+        guard let i = slot.siblings.firstIndex(where: { $0.id == frontID }),
               slot.siblings.indices.contains(i + delta) else { return }
         let next = slot.siblings[i + delta]
-        open(PaneSlot(paneID: next.paneID, title: next.displayName, agent: next,
-                      initialReply: "", siblings: slot.siblings))
+        open(paneSlot(next, title: next.displayName, siblings: slot.siblings))
     }
 
     /// Sections after applying the search box. Search filters the raw agents and
@@ -2307,22 +2336,16 @@ struct TerminalHomeView: View {
 
     /// The on-screen item directly above the open sidebar row: its bottom separator would
     /// touch the open row's highlight, so it is hidden (Messages does the same). A row is
-    /// identified by its pane ID, a group's disclosure row ("Idle  4 ›") by `disclosureKey`,
-    /// a folder row by `folderKey`.
+    /// identified by its pane ID, a folder row by `folderKey`.
     private func itemAboveOpenRow(_ sections: [AgentFolderLayout.Section]) -> String? {
         guard hSizeClass == .regular, let frontID else { return nil }
         var previous: String?
         for section in sections {
-            let isCollapsed = search.isEmpty && collapsed.contains(section.group)
-            if section.group.startsCollapsed && search.isEmpty {
-                previous = Self.disclosureKey(section.group)
-            }
-            guard !isCollapsed else { continue }
             for item in section.items {
                 switch item {
                 case .agent(let row, _, _):
-                    if row.info.paneID == frontID { return previous }
-                    previous = row.info.paneID
+                    if row.info.id == frontID { return previous }
+                    previous = row.info.id
                 case .folder(let summary):
                     previous = Self.folderKey(summary.folder.id)
                 }
@@ -2330,8 +2353,6 @@ struct TerminalHomeView: View {
         }
         return nil
     }
-
-    private static func disclosureKey(_ group: AgentGroup) -> String { "disclosure:\(group)" }
 
     /// The iPad (regular-width) layout: a two-column `NavigationSplitView`. Sidebar = the section
     /// pill + the agents list; detail = the selected agent's LIVE TERMINAL (or Gram / Settings for
@@ -2357,12 +2378,12 @@ struct TerminalHomeView: View {
                     case .settings:
                         SectionTopBar(title: "Settings") { hideSidebarButton }
                         settingsIndex   // the section index; each jumps the detail pane
-                    case .gram:
-                        // Gram's Inbox/Saved selector belongs in THIS column, beside the section
-                        // picker, the same way the agents list does. It used to render an empty
-                        // Spacer() here while GramView drew its own 260pt rail in the detail
-                        // pane, which put two sidebars on screen — one of them blank.
-                        gramSidebar
+                    case .feed:
+                        SectionTopBar(title: "Feed") { hideSidebarButton }
+                        FeedTimelineList()
+                            .padding(.horizontal, 8)
+                            .padding(.top, 6)
+                        Spacer(minLength: 0)
                     }
                 }
                 // #360: the sections live in the iPhone tab bar's shape at the bottom of the
@@ -2527,7 +2548,7 @@ struct TerminalHomeView: View {
     private var detailColumn: some View {
         ZStack(alignment: .topLeading) {
                 Palette.groundMachine.ignoresSafeArea()
-                // Base layer: the switch renders Gram / Settings and the agents placeholder.
+                // Base layer: the switch renders Feed / Settings and the agents placeholder.
                 // The terminal container is deliberately NOT in here — it is the
                 // always-mounted overlay below.
                 switch selectedTab {
@@ -2535,17 +2556,13 @@ struct TerminalHomeView: View {
                     if frontID == nil {
                         SelectAgentPlaceholder(lines: glyphFieldLines, spotlight: glyphFieldSpotlight)
                     }
-                case .gram:
-                    GramView(client: client, unread: gramUnread,
-                             showingSaved: $gramShowingSaved,
-                             refreshToken: gramRefreshToken,
-                             readAllToken: gramReadAllToken,
-                             searchText: $gramSearch,
-                             newestToken: gramNewestToken)
+                case .feed:
+                    FeedView(client: client)
                 case .settings:
                     SettingsView(
                         client: client,
-                        agents: agents,
+                        // Its bulk swap restarts agents on `client`: the connected session's only.
+                        agents: agents.filter { $0.session == nil },
                         host: host,
                         connected: error == nil && !loading,
                         canReconnect: rejectedFingerprint == nil,
@@ -2571,8 +2588,7 @@ struct TerminalHomeView: View {
         }
     }
 
-    /// Zero-opacity buttons that exist only to register ⌘K / ⌘/ (and ⌘F on Gram) with the
-    /// responder chain.
+    /// Zero-opacity buttons that exist only to register ⌘K / ⌘/ with the responder chain.
     private var keyboardShortcuts: some View {
         ZStack {
             Button("Toggle sidebar") { toggleSidebar() }
@@ -2587,13 +2603,6 @@ struct TerminalHomeView: View {
                 .keyboardShortcut("-", modifiers: .command)
             Button("Reset zoom") { terminalFontSize = 12.5 }
                 .keyboardShortcut("0", modifiers: .command)
-            // ⌘F on Gram puts the cursor in the sidebar search. Registered only while Gram is
-            // the section: the terminal's own ⌘F lives on the front pane, which is not
-            // presented then, so the two bindings never compete.
-            if selectedTab == .gram {
-                Button("Search Gram") { focusGramSearch() }
-                    .keyboardShortcut("f", modifiers: .command)
-            }
         }
         .opacity(0)
         .allowsHitTesting(false)
@@ -2644,163 +2653,6 @@ struct TerminalHomeView: View {
         Spacer(minLength: 0)
     }
 
-    /// Gram's sidebar column, as the design draws it: the shared section bar (Back, the small
-    /// centred title with the amber unread count, and the sidebar toggle / Read all / Refresh
-    /// capsule), a mic-less search field, and the channel's two conversations as Messages rows.
-    ///
-    /// This is the SAME column the agents list uses. Gram previously drew its own rail inside the
-    /// detail pane while this column rendered a blank `Spacer()`, so the reader saw two sidebars
-    /// and the left one was empty. Selecting a row writes `gramShowingSaved` and typing writes
-    /// `gramSearch`; the page reads both as bindings, so the detail pane filters and swaps in
-    /// place with no navigation, and the page shows no search control of its own.
-    private var gramSidebar: some View {
-        GramUnreadContent(unread: gramUnread) { count in
-            VStack(alignment: .leading, spacing: 0) {
-                SectionTopBar(title: "Gram", count: count, leading: {
-                    SectionBackSlot(.leading) { sectionBackButton }
-                }) {
-                    hideSidebarButton
-                    SectionBackSlot(.trailing) { sectionBackButton }
-                    if !gramShowingSaved, count > 0 {
-                        SectionBarButton(icon: "envelope.open", label: "Read all") { gramReadAllToken += 1 }
-                    }
-                    SectionBarButton(icon: "arrow.clockwise", label: "Refresh") { gramRefreshToken += 1 }
-                }
-                sidebarSearchField(text: $gramSearch, focus: $gramSearchFocused,
-                                   identifier: "gram-search-field", height: 40, outlined: true)
-                    .padding(.top, 2)
-                GramSidebarConversations(showingSaved: $gramShowingSaved, unreadCount: count)
-                    .padding(.horizontal, 8)
-                    .padding(.top, 6)
-                Spacer(minLength: 0)
-            }
-            .frame(maxHeight: .infinity, alignment: .top)
-        }
-    }
-
-    /// ⌘F on Gram: the cursor goes to the sidebar search. A minimised sidebar is opened first;
-    /// the field only mounts with its column, so the focus waits out the column's animation.
-    private func focusGramSearch() {
-        guard columnVisibility == .detailOnly else {
-            gramSearchFocused = true
-            return
-        }
-        toggleSidebar()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { gramSearchFocused = true }
-    }
-
-    /// Gram's two conversations in the sidebar, as Messages rows. "Gram" is the channel: the two
-    /// most recent agent senders' avatars, the newest message as the preview and its time, and
-    /// the amber dot while anything is unread. "Saved" is the local bookmarks: the newest saved
-    /// message and its time. Selecting a row writes `showingSaved`, which the page reads.
-    ///
-    /// Its own view, observing the two stores itself, so a poll or a bookmark re-renders these
-    /// two rows rather than the whole home view.
-    private struct GramSidebarConversations: View {
-        @Binding var showingSaved: Bool
-        let unreadCount: Int
-        @ObservedObject private var inboxStore = GramInboxStore.shared
-        @ObservedObject private var savedStore = SavedGramStore.shared
-
-        var body: some View {
-            let messages = inboxStore.inbox.messages   // newest first
-            let senders = Self.recentAgentSenders(in: messages)
-            let newestSaved = savedStore.saved.first   // newest first
-            VStack(spacing: 2) {
-                conversation(identifier: "gram-conversation-gram", selected: !showingSaved,
-                             select: { showingSaved = false }) {
-                    GramConversationRow(
-                        title: "Gram",
-                        avatarNames: senders,
-                        // No agent has written yet: the channel's own symbol in place of faces.
-                        systemImage: senders.isEmpty ? "bubble.left.and.bubble.right.fill" : nil,
-                        preview: messages.first.map { Self.preview(of: $0) } ?? AttributedString(),
-                        time: messages.first?.createdAt,
-                        unread: unreadCount > 0,
-                        selected: !showingSaved)
-                }
-                conversation(identifier: "gram-conversation-saved", selected: showingSaved,
-                             select: { showingSaved = true }) {
-                    GramConversationRow(
-                        title: "Saved",
-                        avatarNames: [],
-                        systemImage: "bookmark.fill",
-                        preview: newestSaved.map { Self.preview(of: $0) }
-                            ?? AttributedString("No saved messages yet"),
-                        time: newestSaved?.createdAt,
-                        unread: false,
-                        selected: showingSaved)
-                }
-            }
-        }
-
-        /// The row as a plain button carrying the id tests and VoiceOver use, with the
-        /// selected trait on the current conversation.
-        private func conversation<Row: View>(identifier: String, selected: Bool,
-                                             select: @escaping () -> Void,
-                                             @ViewBuilder row: () -> Row) -> some View {
-            Button(action: select, label: row)
-                .buttonStyle(.plain)
-                .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 14))
-                .hoverEffect(.highlight)
-                .accessibilityIdentifier(identifier)
-                .accessibilityAddTraits(selected ? .isSelected : [])
-        }
-
-        /// The two most recent distinct agents that wrote, by bare name, newest first.
-        private static func recentAgentSenders(in messages: [GramMessage]) -> [String] {
-            var names: [String] = []
-            for message in messages where message.isFromAgent {
-                let name = message.senderAgentName
-                if !names.contains(name) { names.append(name) }
-                if names.count == 2 { break }
-            }
-            return names
-        }
-
-        /// "You: **vetrina** great, ship it." for the owner's posts (the addressee in bold;
-        /// a shared-queue post has none), "clientloop: Scaffold is up…" for an agent's.
-        private static func preview(of message: GramMessage) -> AttributedString {
-            let body = summary(message.text, fileName: message.attachmentPreview)
-            guard !message.isFromAgent else {
-                return AttributedString("\(message.senderAgentName): \(body)")
-            }
-            var line = AttributedString("You: ")
-            if let to = message.to {
-                var name = AttributedString(GramMessage.agentName(from: to))
-                name.inlinePresentationIntent = .stronglyEmphasized
-                line += name
-                line += AttributedString(" ")
-            }
-            line += AttributedString(body)
-            return line
-        }
-
-        /// A saved copy keeps the sender as displayed (`hetzner-1/clientloop`); the row shows
-        /// the bare name, like the channel row.
-        private static func preview(of saved: SavedGram) -> AttributedString {
-            let body = summary(saved.text, fileName: saved.attachmentPreview)
-            let sender = saved.fromAgent ? GramMessage.agentName(from: saved.from) : "You"
-            return AttributedString("\(sender): \(body)")
-        }
-
-        /// The message as one line of prose: fences dropped (their code kept), runs of
-        /// whitespace and newlines collapsed. A file with no caption reads as its name (an
-        /// expired one as "<name> (expired)").
-        private static func summary(_ text: String, fileName: String?) -> String {
-            let pieces = GramText.segments(text).map { segment -> String in
-                switch segment {
-                case .text(let prose): return prose
-                case .code(let code, _): return code
-                }
-            }
-            let flat = pieces.joined(separator: " ")
-                .split(whereSeparator: \.isWhitespace)
-                .joined(separator: " ")
-            return flat.isEmpty ? (fileName ?? "") : flat
-        }
-    }
-
     private var hideSidebarButton: some View {
         SectionBarButton(icon: "sidebar.leading", label: "Minimise sidebar",
                          identifier: "terminal-sidebar-toggle", action: toggleSidebar)
@@ -2818,10 +2670,10 @@ struct TerminalHomeView: View {
     /// shows. Earlier systems keep the frosted bar. It follows the sidebar's width but never
     /// grows past `sidebarTabBarMaxWidth`, centred, so a wide sidebar doesn't stretch it.
     private var sidebarTabBar: some View {
-        GramUnreadContent(unread: gramUnread) { count in
+        SectionBadgeContent {
             HStack(spacing: 0) {
                 ForEach(HomeTab.allCases, id: \.self) { tab in
-                    sidebarTabItem(tab, badge: tabBadgeCount(for: tab, gram: count))
+                    sidebarTabItem(tab, badge: tabBadgeCount(for: tab))
                 }
             }
         }
@@ -2837,17 +2689,11 @@ struct TerminalHomeView: View {
     /// About three iPhone tab items wide; the sidebar ranges 250-460 pt.
     private static let sidebarTabBarMaxWidth: CGFloat = DesignTokens.Size.tabBarMaxWidth
 
-    /// Selects a section. Gram tapped while it is already selected goes to its newest message
-    /// (`gramNewestToken`): the feed is oldest-first, so "back to the start" is its BOTTOM.
     private func select(_ tab: HomeTab) {
-        if tab == .gram, selectedTab == .gram { gramNewestToken += 1 }
         selectedTab = tab
     }
 
-    /// The phone's tab bar selection, through `select`: the TabView sets it again with the
-    /// selected tab when that tab is tapped, which is how a re-tap of Gram is seen. Gram's
-    /// feed opts out of the tab bar's own scroll-to-top (see `WindowedBottomFeed`); Agents
-    /// and Settings keep it.
+    /// The phone's tab bar selection, through `select`.
     private var tabSelection: Binding<HomeTab> {
         Binding(get: { selectedTab }, set: { select($0) })
     }
@@ -2988,9 +2834,9 @@ struct TerminalHomeView: View {
             sidebarToggleButton(
                 icon: "sidebar.left", hint: "Expand sidebar (⌘K)", minimize: false)
                 .padding(.bottom, 2)
-            GramUnreadContent(unread: gramUnread) { count in
+            SectionBadgeContent {
                 ForEach(HomeTab.allCases, id: \.self) { tab in
-                    railSectionButton(tab, badge: tabBadgeCount(for: tab, gram: count))
+                    railSectionButton(tab, badge: tabBadgeCount(for: tab))
                 }
             }
             // Gated on the same condition as the counts below it: a separator with
@@ -3049,10 +2895,11 @@ struct TerminalHomeView: View {
         .accessibilityValue(badgeValue(tab, badge))
     }
 
-    /// The count a section's tab carries: Gram's unread messages, Settings' herdr update.
-    private func tabBadgeCount(for tab: HomeTab, gram: Int) -> Int {
+    /// The count a section's tab carries: the feed cards waiting for the owner, Settings'
+    /// herdr update.
+    private func tabBadgeCount(for tab: HomeTab) -> Int {
         switch tab {
-        case .gram: return gram
+        case .feed: return FeedStore.shared.pendingCount
         case .settings: return settingsBadge
         case .agents: return 0
         }
@@ -3060,7 +2907,11 @@ struct TerminalHomeView: View {
 
     private func badgeValue(_ tab: HomeTab, _ badge: Int) -> String {
         guard badge > 0 else { return "" }
-        return tab == .settings ? "\(badge) update" : "\(badge) unread"
+        switch tab {
+        case .settings: return "\(badge) update"
+        case .feed: return "\(badge) waiting for you"
+        default: return "\(badge) unread contacts"
+        }
     }
 
     /// One activity count. Rendered only when non-zero: a rail of zeroes is noise.
@@ -3080,23 +2931,20 @@ struct TerminalHomeView: View {
         }
     }
 
-    private struct GramUnreadContent<Content: View>: View {
-        @ObservedObject var unread: GramUnreadTracker
-        private let content: (Int) -> Content
+    /// Redraws the section badges when the feed's waiting cards change.
+    private struct SectionBadgeContent<Content: View>: View {
+        @ObservedObject private var feed = FeedStore.shared
+        @ViewBuilder let content: () -> Content
 
-        init(unread: GramUnreadTracker, @ViewBuilder content: @escaping (Int) -> Content) {
-            self.unread = unread
-            self.content = content
-        }
-
-        var body: some View { content(unread.count) }
+        var body: some View { content() }
     }
 
-    private struct GramUnreadBadge: ViewModifier {
-        @ObservedObject var unread: GramUnreadTracker
+    private struct FeedPendingBadge: ViewModifier {
+        @ObservedObject private var feed = FeedStore.shared
 
         func body(content: Content) -> some View {
-            content.badge(unread.count == 0 ? nil : Text("\(unread.count)"))
+            let count = feed.pendingCount
+            content.badge(count == 0 ? nil : Text("\(count)"))
         }
     }
 
@@ -3117,18 +2965,15 @@ struct TerminalHomeView: View {
                     .tag(HomeTab.agents)
                     .tabItem { Label(HomeTab.agents.label, systemImage: HomeTab.agents.icon) }
 
-                // Gram and Settings were modal covers; they are persistent tabs now.
-                // Both are nav-agnostic and take no onClose as tabs (no close button).
-                GramView(client: client, unread: gramUnread,
-                         showingSaved: $gramShowingSaved,
-                         newestToken: gramNewestToken)
-                    .tag(HomeTab.gram)
-                    .tabItem { Label(HomeTab.gram.label, systemImage: HomeTab.gram.icon) }
-                    .modifier(GramUnreadBadge(unread: gramUnread))
+                FeedView(client: client)
+                    .tag(HomeTab.feed)
+                    .tabItem { Label(HomeTab.feed.label, systemImage: HomeTab.feed.icon) }
+                    .modifier(FeedPendingBadge())
 
                 SettingsView(
                     client: client,
-                    agents: agents,
+                    // Its bulk swap restarts agents on `client`: the connected session's only.
+                    agents: agents.filter { $0.session == nil },
                     host: host,
                     connected: error == nil && !loading,
                     // Withhold reconnect during a host-key rejection — reconnecting then
@@ -3186,9 +3031,9 @@ struct TerminalHomeView: View {
         .onReceive(NotificationCenter.default.publisher(for: TerminalInteractionHarness.navigateNotification)) { note in
             guard ScreenshotMock.mode == .resize else { return }
             if note.object as? String == "close" {
-                if let frontID { slots.removeAll { $0.paneID == frontID } }
-                frontID = slots.last?.paneID
-            } else if let slot = slots.first(where: { $0.paneID != frontID }) {
+                if let frontID { slots.removeAll { $0.id == frontID } }
+                frontID = slots.last?.id
+            } else if let slot = slots.first(where: { $0.id != frontID }) {
                 open(slot)
             }
         }
@@ -3235,6 +3080,8 @@ struct TerminalHomeView: View {
                 LiveActivityController.shared.recoverIfEnded(
                     LiveActivityController.state(from: fullList)
                 )
+                // Also every poll: accounts' usage moves without the roster moving.
+                syncWidgets()
             }
         }
         // The roster menus' daemon actions, on the current client (see `menuAction`).
@@ -3256,21 +3103,13 @@ struct TerminalHomeView: View {
             guard liveEventsSupported, scenePhase != .background else { return }
             await runLiveEvents()
         }
-        // Ambient unread-gram poll for the tab badge, running ONLY while the Gram
-        // tab is not showing — GramView keeps its own 6s poll while visible and
-        // writes the count on load / mark-read. Keyed on selectedTab so it
-        // restarts on tab change and idles on Gram: exactly one poller is live.
-        .task(id: selectedTab) {
-            guard selectedTab != .gram else { return }
+        // The Feed tab's badge counts the cards waiting for the owner, so the feed is fetched
+        // on every tab, not only while the Feed page is open.
+        // ponytail: a minute's poll; herdr pushing new questions would make it immediate.
+        .task {
             while !Task.isCancelled {
-                // Unconditional on purpose: `unread_only` is a small answer already,
-                // and this poller keeps no list to compare a digest against. The count is
-                // the daemon's `unread_count` when it sends one: a paging daemon answers
-                // with one page, which would undercount (`unreadBadgeCount`).
-                if let count = try? await client.gramList(unreadOnly: true).unreadBadgeCount {
-                    gramUnread.count = count
-                }
-                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                await FeedStore.shared.load(client)
+                try? await Task.sleep(nanoseconds: 60_000_000_000)
             }
         }
         // Keep the session Live Activity (#90) in step with the herd: push a fresh
@@ -3279,6 +3118,7 @@ struct TerminalHomeView: View {
         // user has Live Activities off — the controller guards that.
         .onChange(of: fullList, initial: true) { _, list in
             LiveActivityController.shared.update(LiveActivityController.state(from: list))
+            syncWidgets()
         }
         // If the daemon lacks the fork features, surface the advisory notice. Only a
         // DEFINITIVE not-fork flips it — network/other errors stay quiet (see
@@ -3296,15 +3136,15 @@ struct TerminalHomeView: View {
             if !hostKey.isEmpty, session == nil { terminalsStore.migrateLegacyIfNeeded(host: hostKey) }
         }
         .onAppear { seedFromSessionCache() }
-        .task { await watchSessions() }
+        .task(id: showAllSessions) { await watchSessions() }
         // First launch: show the gestures tutorial once — but NOT over a pending push
-        // deep-link (openGramIfPending / applyDeepLink would dismiss it to show Gram or
+        // deep-link (openPushedTabIfPending / applyDeepLink would dismiss it to show Gram or
         // the pane, wasting the one-shot). Burn the seen-flag ONLY when we present.
         .onAppear {
             if shouldShowFirstRunGesturesHelp,
                 !hasSeenGesturesHelp,
                 activeCover == nil,
-                !push.pendingGram,
+                push.pendingFeed == nil,
                 push.pendingPaneID == nil
             {
                 hasSeenGesturesHelp = true
@@ -3315,7 +3155,7 @@ struct TerminalHomeView: View {
         // selected tab (open() selects Agents); the cold-launch / just-loaded case is
         // handled at the end of load().
         .onChange(of: push.pendingPaneID) { _, newValue in if newValue != nil { applyDeepLink() } }
-        .onChange(of: push.pendingGram) { _, newValue in if newValue { openGramIfPending() } }
+        .onChange(of: push.pendingFeed) { _, newValue in if newValue != nil { openPushedTabIfPending() } }
         // ONE item-based sheet, not two stacked isPresented presentations (stacked
         // presentation modifiers on a single view are historically fragile). A SHEET
         // (not a full-screen cover) so it presents bottom-up and swipe-down dismisses
@@ -3330,7 +3170,7 @@ struct TerminalHomeView: View {
                 pendingOpenSlot = nil
                 open(slot)
             } else {
-                openGramIfPending()
+                openPushedTabIfPending()
             }
             // A fork notice deferred behind this sheet fires now — but only if nothing
             // else claimed the foreground, so the fullScreenCover never races the sheet.
@@ -3365,13 +3205,14 @@ struct TerminalHomeView: View {
         // arrived WHILE it was up (a gram push / pane deep-link deferred against it),
         // so those never armed a competing presentation over the cover.
         .fullScreenCover(isPresented: $showForkNotice, onDismiss: {
-            openGramIfPending()
+            openPushedTabIfPending()
             applyDeepLink()
         }) {
             ForkNoticeView(onDismiss: { showForkNotice = false })
         }
         .onChange(of: agents, initial: true) { _, roster in
             avatars.client = client
+            avatars.sessionClients = sessionClients
             avatars.update(agents: roster)
             groups.attach(client: client, host: hostKey)
         }
@@ -3430,9 +3271,10 @@ struct TerminalHomeView: View {
                 Button("Restart", role: .destructive) {
                     let target = row.info.paneID
                     let title = row.title
+                    let rowClient = sessionClient(for: row.info)
                     Task {
                         await perform(verb: "restart", title: title) {
-                            try await client.restartAgent(target: target)
+                            try await rowClient.restartAgent(target: target)
                         }
                     }
                 }
@@ -3451,9 +3293,10 @@ struct TerminalHomeView: View {
                     let target = cand.row.info.paneID
                     let title = cand.row.title
                     let accountID = cand.account.id
+                    let rowClient = sessionClient(for: cand.row.info)
                     Task {
                         await perform(verb: "swap", title: title) {
-                            try await client.restartAgent(target: target, account: accountID)
+                            try await rowClient.restartAgent(target: target, account: accountID)
                         }
                     }
                 }
@@ -3473,7 +3316,7 @@ struct TerminalHomeView: View {
             }
             .sheet(item: $transferCandidate) { candidate in
                 AgentSessionTransferSheet(
-                    client: client,
+                    client: sessionClient(for: candidate.row.info),
                     agent: candidate.row.info,
                     title: candidate.row.title,
                     source: candidate.source,
@@ -3567,9 +3410,10 @@ struct TerminalHomeView: View {
             ) { newName in
                 let paneID = row.info.paneID
                 let title = row.title
+                let rowClient = sessionClient(for: row.info)
                 Task {
                     await perform(verb: "rename", title: title) {
-                        try await client.renameAgent(target: paneID, name: newName)
+                        try await rowClient.renameAgent(target: paneID, name: newName)
                     }
                     // The server moved its folder membership and star to the new name.
                     await groups.refresh(force: true)
@@ -3635,8 +3479,16 @@ struct TerminalHomeView: View {
                     SessionPills(
                         sessions: runningSessions,
                         current: session,
+                        showAll: showAllSessions,
                         needsYou: sessionNeedsYou,
-                        onSelect: { onSwitchSession($0.default ? nil : $0.name) }
+                        onSelectAll: { setShowAllSessions(true) },
+                        onSelect: { picked in
+                            // A filter, not a mode: show one session's agents. The app moves
+                            // to that session so its rows get the full roster (folders, live
+                            // status, new agents land there).
+                            setShowAllSessions(false)
+                            if !isConnectedSession(picked) { onSwitchSession(picked.default ? nil : picked.name) }
+                        }
                     )
                     .padding(.top, 4).padding(.bottom, 6)
                 }
@@ -3644,67 +3496,122 @@ struct TerminalHomeView: View {
         }
     }
 
+    private func setShowAllSessions(_ showAll: Bool) {
+        sessionCache?.showAll = showAll
+        guard showAll != showAllSessions else { return }
+        showAllSessions = showAll
+        let latest = rosterRefreshState().latest
+        receiveRoster(agents: latest.agents, accounts: latest.accounts)
+    }
+
+    /// Whether `listed` is the session this home is connected to (nil = default).
+    private func isConnectedSession(_ listed: HerdrSession) -> Bool {
+        listed.default ? (session ?? "default") == "default" : listed.name == session
+    }
+
+    /// Hand the home-screen widgets what this home sees (WidgetSync skips unchanged snapshots).
+    private func syncWidgets() {
+        WidgetSync.update(host: LiveActivityController.shared.currentHostLabel ?? hostKey,
+                          session: connectedSessionName, list: fullList, accounts: accounts,
+                          apm: LiveActivityController.shared.apm)
+    }
+
+    /// The connected session's name as the pills show it.
+    private var connectedSessionName: String {
+        runningSessions.first(where: isConnectedSession)?.name ?? session ?? "default"
+    }
+
     /// Agents that need you in each running session, for the pills: this session's count
     /// is the live roster's; the others come from `watchSessions`' periodic peek.
     private var sessionNeedsYou: [String: Int] {
         var counts = otherSessionsNeedYou
-        if let here = runningSessions.first(where: { $0.default ? (session ?? "default") == "default" : $0.name == session }) {
-            counts[here.name] = fullList.needsYouCount
+        if let here = runningSessions.first(where: isConnectedSession) {
+            counts[here.name] = AgentList(agents: agents.filter { $0.session == nil }).needsYouCount
         }
         return counts
     }
 
-    /// Keeps the session pills current (#347): the machine's running herdr sessions and how
-    /// many agents need you in each of the others, every 15 s. A machine whose herdr has no
-    /// sessions (or a failed listing) shows no pills. If the session this home is on is no
-    /// longer running (stopped since it was remembered), it moves back to the default one.
+    /// Keeps the session pills and the All view current (#347): the machine's running herdr
+    /// sessions, and every other session's agents — every 5 s while All shows them, every
+    /// 15 s for the pills' counts otherwise. A machine whose herdr has no sessions (or a
+    /// failed listing) shows no pills. If the connected session isn't running (it stopped,
+    /// or the machine runs only named sessions and no default one), the app moves to one
+    /// that is rather than report herdr as not running.
     @MainActor
     private func watchSessions() async {
         while !Task.isCancelled {
             if let listed = try? await client.listSessions() {
                 let running = listed.filter(\.running)
-                if let session, session != "default", !running.contains(where: { $0.name == session }) {
-                    onSwitchSession(nil)
+                if !running.contains(where: isConnectedSession),
+                   let next = running.first(where: \.default) ?? running.first {
+                    onSwitchSession(next.default ? nil : next.name)
                     return
                 }
                 runningSessions = running
                 sessionCache?.setRunningSessions(running)
                 var counts: [String: Int] = [:]
+                var rosters: [String: [AgentInfo]] = [:]
                 if running.count >= 2 {
-                    for other in running where (other.default ? "default" : other.name) != (session ?? "default") {
+                    for other in running where !isConnectedSession(other) {
                         let otherSession = other.default ? nil : other.name
                         if let agents = try? await client.agentList(inSession: otherSession) {
                             counts[other.name] = AgentList(agents: agents).needsYouCount
                             sessionCache?.store(agents, session: otherSession)
+                            if let tagged = taggedRoster(agents, in: other) { rosters[other.name] = tagged }
                         }
                     }
                 }
+                guard !Task.isCancelled else { return }
                 otherSessionsNeedYou = counts
+                setOtherRosters(rosters)
             } else {
                 runningSessions = []
+                setOtherRosters([:])
             }
-            try? await Task.sleep(nanoseconds: 15_000_000_000)
+            try? await Task.sleep(nanoseconds: showAllSessions ? agentListPollIntervalNanoseconds : 15_000_000_000)
         }
     }
 
+    /// `agents` from another session, tagged with it, once there is a client to act on them
+    /// with; nil when the transport can't address that session (its rows then stay out).
+    private func taggedRoster(_ agents: [AgentInfo], in other: HerdrSession) -> [AgentInfo]? {
+        if sessionClients[other.name] == nil {
+            guard let scoped = client.forSession(other.default ? nil : other.name) else { return nil }
+            sessionClients[other.name] = scoped
+        }
+        return agents.map { $0.inSession(other.name) }
+    }
+
+    private func setOtherRosters(_ rosters: [String: [AgentInfo]]) {
+        guard rosters != otherRosters else { return }
+        otherRosters = rosters
+        let latest = rosterRefreshState().latest
+        receiveRoster(agents: latest.agents, accounts: latest.accounts)
+    }
+
     /// After a session switch (#386), start from what the app already knows instead of an
-    /// empty screen: the running sessions (so the pills don't vanish and reappear), their
-    /// needs-you counts, and this session's agents if seen in the last minute. The first
-    /// load replaces all of it. Never overwrites a list a load has already published.
+    /// empty screen: the All/one-session choice, the running sessions (so the pills don't
+    /// vanish and reappear), their needs-you counts and agents, and this session's agents if
+    /// seen in the last minute. The first load replaces all of it. Never overwrites a list a
+    /// load has already published.
     private func seedFromSessionCache() {
         guard let sessionCache else { return }
+        if showAllSessions != sessionCache.showAll { showAllSessions = sessionCache.showAll }
         if runningSessions.isEmpty, !sessionCache.runningSessions.isEmpty {
             runningSessions = sessionCache.runningSessions
             var counts: [String: Int] = [:]
-            for other in runningSessions where (other.default ? "default" : other.name) != (session ?? "default") {
+            var rosters: [String: [AgentInfo]] = [:]
+            for other in runningSessions where !isConnectedSession(other) {
                 if let agents = sessionCache.roster(for: other.default ? nil : other.name) {
                     counts[other.name] = AgentList(agents: agents).needsYouCount
+                    if let tagged = taggedRoster(agents, in: other) { rosters[other.name] = tagged }
                 }
             }
             otherSessionsNeedYou = counts
+            otherRosters = rosters
         }
-        if agents.isEmpty, let cached = sessionCache.roster(for: session) {
-            receiveRoster(agents: cached, accounts: [])
+        if agents.isEmpty {
+            receiveRoster(agents: sessionCache.roster(for: session) ?? [], accounts: [])
         }
     }
 
@@ -3805,8 +3712,7 @@ struct TerminalHomeView: View {
                 waiting: search.isEmpty ? fullList.rows.filter { $0.group == .needsYou } : [],
                 onScrollToTop: { needsYouSight.scrollToTop() },
                 onOpen: { row in
-                    open(PaneSlot(paneID: row.info.paneID, title: row.title, agent: row.info,
-                                  initialReply: "", siblings: orderedSiblings))
+                    open(paneSlot(row.info, title: row.title, siblings: orderedSiblings))
                 }
             )
         }
@@ -3961,8 +3867,13 @@ struct TerminalHomeView: View {
     /// transform means an unchanged response performs no SwiftUI state write.
     @MainActor
     private func receiveRoster(agents: [AgentInfo], accounts: [CredentialAccount]) {
+        // Other sessions' rows are never patched in place: always rebuilt from `otherRosters`.
+        var merged = agents.filter { $0.session == nil }
+        if showAllSessions {
+            for name in otherRosters.keys.sorted() { merged += otherRosters[name] ?? [] }
+        }
         let snapshot = AgentRosterSnapshot(
-            agents: agents,
+            agents: merged,
             accounts: accounts,
             livePaneIDs: livePaneIDs
         )
@@ -3997,12 +3908,12 @@ struct TerminalHomeView: View {
     @MainActor
     private func updateLiveAgentBookkeeping() {
         guard !rosterScroll.isScrolling else { return }
-        let live = Set(displayedRoster.agents.map(\.paneID))
+        let live = Set(displayedRoster.agents.map(\.id))
         if !live.isSubset(of: everLive) {
             everLive.formUnion(live)
         }
         let retainedSlots = slots.filter {
-            $0.paneID == frontID || !everLive.contains($0.paneID) || live.contains($0.paneID)
+            $0.id == frontID || !everLive.contains($0.id) || live.contains($0.id)
         }
         if retainedSlots.count != slots.count {
             slots = retainedSlots
@@ -4108,9 +4019,10 @@ struct TerminalHomeView: View {
             Button("Close", role: .destructive) {
                 let archived = row.info
                 let title = row.title
+                let rowClient = sessionClient(for: row.info)
                 Task {
                     await perform(verb: "close", title: title) {
-                        try await client.forgetAgent(archived)
+                        try await rowClient.forgetAgent(archived)
                     }
                 }
             }
@@ -4218,38 +4130,64 @@ struct TerminalHomeView: View {
     }
 
     private func sectionView(_ section: AgentFolderLayout.Section, aboveOpen: String?) -> some View {
-        let group = section.group
-        // An active search overrides collapse — a match inside IDLE must not stay
-        // hidden behind a shut section the user did not open.
-        let isCollapsed = search.isEmpty && collapsed.contains(group)
         // Compute the paging list once per section, not inside the per-row button closure
         // (which SwiftUI evaluates eagerly for every row). `orderedSiblings` now filters
         // the cached roster list and performs no sorting.
         let siblings = orderedSiblings
         return VStack(alignment: .leading, spacing: 0) {
-            // #352: no section headers. Needs you, working and stopped rows follow each
-            // other in that order; a collapsible group (Idle) is one plain row at the end
-            // ("Idle  4 ›") that opens its rows underneath. An active search shows the rows
-            // without the disclosure, as before. The count includes the agents in its folders.
-            if group.startsCollapsed && search.isEmpty {
-                disclosureRow(group.sectionTitle.capitalized, count: section.agentCount, open: !isCollapsed,
-                              separator: aboveOpen != Self.disclosureKey(group)) {
-                    if isCollapsed { collapsed.remove(group) } else { collapsed.insert(group) }
-                }
-            }
-
-            if !isCollapsed {
-                ForEach(section.items) { item in
-                    switch item {
-                    case let .agent(row, starred, folderID):
-                        agentRowButton(row, starred: starred, indented: folderID != nil,
-                                       aboveOpen: aboveOpen, siblings: siblings)
-                    case let .folder(summary):
-                        folderRow(summary, aboveOpen: aboveOpen)
+            // #352: no section headers, and no folded group: every agent shows, in herdr's
+            // priority order (needs you, done, working, idle; stopped and unrecognised high).
+            ForEach(section.items) { item in
+                switch item {
+                case let .agent(row, starred, folderID):
+                    agentRowButton(row, starred: starred, indented: folderID != nil,
+                                   aboveOpen: aboveOpen, siblings: siblings)
+                    if let subagents = fullList.subagents[row.id] {
+                        subagentsRow(row, subagents)
+                        if openCallers.contains(row.id) {
+                            ForEach(subagents) { subagent in
+                                agentRowButton(subagent, starred: false, indented: true,
+                                               aboveOpen: aboveOpen, siblings: siblings)
+                            }
+                        }
                     }
+                case let .folder(summary):
+                    folderRow(summary, aboveOpen: aboveOpen)
                 }
             }
         }
+    }
+
+    /// The fold under a caller, as herdr's agent panel draws it: how many subagents it runs,
+    /// dotted in the most urgent one's colour. Tap shows or folds them.
+    private func subagentsRow(_ caller: AgentRow, _ subagents: [AgentRow]) -> some View {
+        let open = openCallers.contains(caller.id)
+        let urgent = subagents.first?.group ?? .idle
+        let dot: Color = switch urgent {
+        case .needsYou: Palette.waiting
+        case .stopped: Palette.died
+        case .working, .unrecognised: Palette.working
+        case .done, .idle: Palette.textFaint
+        }
+        return Button {
+            if open { openCallers.remove(caller.id) } else { openCallers.insert(caller.id) }
+        } label: {
+            HStack(spacing: DesignTokens.Space.stackSmall) {
+                Image(systemName: open ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.textFaint)
+                Circle().fill(dot).frame(width: 7, height: 7)
+                Text("\(subagents.count) subagent\(subagents.count == 1 ? "" : "s")")
+                    .font(Typography.app(13)).foregroundStyle(Palette.textDim)
+                Spacer(minLength: 0)
+            }
+            .padding(.leading, DesignTokens.Space.rowLeadIndented)
+            .frame(height: 30)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(subagents.count) subagents, most urgent \(urgent.label)")
+        .accessibilityValue(open ? "expanded" : "collapsed")
+        .accessibilityIdentifier("agent-subagents-\(caller.info.paneID)")
     }
 
     /// One agent in the list: tap opens its pane, swipe right stars it or moves it to a
@@ -4257,10 +4195,9 @@ struct TerminalHomeView: View {
     private func agentRowButton(_ row: AgentRow, starred: Bool, indented: Bool,
                                 aboveOpen: String?, siblings: [AgentInfo]) -> some View {
         Button {
-            open(PaneSlot(paneID: row.info.paneID, title: row.title,
-                          agent: row.info, initialReply: "", siblings: siblings))
+            open(paneSlot(row.info, title: row.title, siblings: siblings))
         } label: {
-            card(row, separator: aboveOpen != row.info.paneID, starred: starred, indented: indented)
+            card(row, separator: aboveOpen != row.info.id, starred: starred, indented: indented)
         }
         .buttonStyle(.plain)
         // Over the sidebar on iPad / Mac, the hovered agent speaks in the empty
@@ -4295,14 +4232,14 @@ struct TerminalHomeView: View {
             }
             // Avatar… = pick this agent's mascot or photo (herdrup#538). Owner
             // only, on a daemon that stores avatars.
-            if avatars.canEdit {
+            if avatars.canEdit, row.info.session == nil {
                 StableMenuItem("Avatar…", systemImage: "person.crop.circle") {
                     avatarRow = row
                 }
             }
             // Star and Move to folder (#552): the swipe's choices, on a server
             // with folders.
-            if let name = row.info.name, let document = groups.document {
+            if row.info.session == nil, let name = row.info.name, let document = groups.document {
                 StableMenuItem(starred ? "Unstar" : "Star", systemImage: starred ? "star.slash" : "star") {
                     groups.apply(.setStar(name, !starred))
                 }
@@ -4453,7 +4390,7 @@ struct TerminalHomeView: View {
     /// The swipe-right actions of an agent row: Star or Unstar, and Move to folder. None on a
     /// server without folders, and none for an agent with no name to file it under.
     private func folderSwipeActions(_ row: AgentRow, starred: Bool) -> [RowSwipeAction] {
-        guard groups.document != nil, let name = row.info.name else { return [] }
+        guard groups.document != nil, row.info.session == nil, let name = row.info.name else { return [] }
         return [
             RowSwipeAction(title: starred ? "Unstar" : "Star",
                            systemImage: starred ? "star.slash.fill" : "star.fill",
@@ -4564,7 +4501,7 @@ struct TerminalHomeView: View {
         // The selected sidebar row retains its rounded highlight.
         let sidebar = hSizeClass == .regular
         let avatar = sidebar ? DesignTokens.Size.avatarSidebar : DesignTokens.Size.avatarPhone
-        let isOpen = sidebar && frontID == row.info.paneID
+        let isOpen = sidebar && frontID == row.info.id
         let nameSize = sidebar ? DesignTokens.Text.RowName.size : DesignTokens.Text.RowNamePhone.size
         let nameWeight = sidebar ? DesignTokens.Text.RowName.weight : DesignTokens.Text.RowNamePhone.weight
         return HStack(alignment: .center, spacing: 0) {
@@ -4692,18 +4629,23 @@ struct TerminalHomeView: View {
     }
 
     /// "folder · activity": folder is the last path component of `cwd`, activity
-    /// is the stripped terminal title. Either may be missing; the pane id is the
+    /// is the stripped terminal title. Either may be missing; the agent kind is the
     /// last resort so a row is never subtitle-less.
     private func subtitle(_ info: AgentInfo) -> String {
         let folder = info.cwd
             .map { URL(fileURLWithPath: $0).lastPathComponent }
             .flatMap { $0.isEmpty || $0 == "/" ? nil : $0 }
+        var detail: String
         switch (folder, info.activityText) {
-        case let (f?, a?): return "\(f) · \(a)"
-        case let (f?, nil): return f
-        case let (nil, a?): return a
-        case (nil, nil): return info.paneID
+        case let (f?, a?): detail = "\(f) · \(a)"
+        case let (f?, nil): detail = f
+        case let (nil, a?): detail = a
+        case (nil, nil): detail = info.agent ?? "terminal"
         }
+        if let background = info.background { detail = "\(background) · \(detail)" }
+        // The All view mixes sessions: lead with the row's session.
+        guard showAllSessions, runningSessions.count >= 2 else { return detail }
+        return "\(info.session ?? connectedSessionName) · \(detail)"
     }
 
     // MARK: error / host-key recovery (functional, restyled to the tokens)
@@ -4861,7 +4803,7 @@ struct TerminalHomeView: View {
             // prune the FRONT pane, so the reader isn't yanked off an exited terminal.
             updateLiveAgentBookkeeping()
             applyDeepLink(afterLoad: true)   // agents + roster loaded — front any pending push target
-            openGramIfPending()              // a cold-launch gram tap opens the Gram page once loaded
+            openPushedTabIfPending()              // a cold-launch gram tap opens the Gram page once loaded
 
             // Refresh account labels independently. A transient failure, or an older
             // daemon without accounts.list, keeps the freshest successful value. The
@@ -4977,10 +4919,6 @@ struct TerminalHomeView: View {
             // yank the reader into a stale pane (an agent that may have finished long ago). If it was
             // already opened by the onChange path, this is nil already. They can reopen from the list.
             push.pendingPaneID = nil
-            // Same for a pending gram tap: a message does not go stale like a pane,
-            // but popping the Gram cover on some much-later successful load is a
-            // surprise; drop it for the same reason and consistency.
-            push.pendingGram = false
         }
     }
 
@@ -5049,7 +4987,7 @@ struct TerminalHomeView: View {
             liveEvents.ledger.record(update, receivedAt: now)
         }
         let latest = rosterRefreshState().latest
-        switch latest.agents.effect(of: line, receivedAt: now) {
+        switch latest.agents.filter({ $0.session == nil }).effect(of: line, receivedAt: now) {
         case .patch(let patched):
             receiveRoster(agents: patched, accounts: latest.accounts)
         case .reload:
@@ -5676,6 +5614,7 @@ struct TerminalPaneContent: View {
     /// claim back so another device viewing the agent is not held at this one's width
     /// while the app is suspended. A transient `.inactive` keeps the claim.
     @State private var wasBackgrounded = false
+    @ObservedObject private var pip = TerminalPiP.shared
     /// The live terminal's stream-liveness box. A `@State` reference type, so it SURVIVES
     /// a `streamGen` remount and keeps reading the same stream's evidence across one.
     @State private var terminalLiveness = StreamLiveness()
@@ -5686,6 +5625,11 @@ struct TerminalPaneContent: View {
     /// overwritten by the next partial) and suppresses the ctrl-chord interception (so a
     /// single-char dictation partial can't be misread as a control chord).
     @State private var replyDictating = false
+    /// Bumped to stop the mic (`MicButton.stopToken`).
+    @State private var voiceStopToken = 0
+    /// Between a send while Claude has the mic and the submit: the mic is a spinner while
+    /// Claude writes its last words (`submitAfterVoice`).
+    @State private var voiceFinishing = false
     /// Focus of the reply field, so the software keyboard can be DISMISSED — via the
     /// keyboard-toolbar chevron or a tap on the (read-only) terminal.
     @State private var replyFocused = false
@@ -5771,10 +5715,10 @@ struct TerminalPaneContent: View {
     }
 
     private var group: AgentGroup? { agent.map { AgentRow(info: $0).group } }
-    /// The page offers the Chat view: an omp agent whose machine serves `agent.transcript`,
+    /// The page offers the Chat view: an omp, Claude Code or Codex agent whose machine serves `agent.transcript`,
     /// until the server says it cannot give this agent a transcript.
     private var chatAvailable: Bool {
-        transcriptCapable && ChatPreference.isOmp(agent?.agent) && !chatModel.unsupported
+        transcriptCapable && ChatPreference.hasChat(agent?.agent) && !chatModel.unsupported
     }
     private var showingChat: Bool { chatAvailable && showsChat }
 
@@ -5806,6 +5750,33 @@ struct TerminalPaneContent: View {
     // owns delivery then). A pending pre-fill does NOT disable the button once the
     // loop stops — instead the button ROUTES a pre-fill through the prompt-only
     // path (see the replyBar action), so it can never fall to rawKeys send_text.
+    /// Claude Code's own voice for this pane (`HerdrClient.streamAgentVoice`): the mic
+    /// streams there and Claude transcribes into its prompt, for Return to send. nil hides
+    /// the mic: other agents have no dictation mode to feed (Codex's voice is a spoken
+    /// conversation, omp has none), and a federated pane is on another machine.
+    private var agentVoice: (@MainActor (AsyncStream<Data>) async throws -> Void)? {
+        guard agent?.agent?.lowercased() == "claude", client.canStreamAgentVoice(pane: paneID) else { return nil }
+        let client = client, pane = paneID
+        return { audio in try await client.streamAgentVoice(pane: pane, audio: audio) }
+    }
+    /// Claude has the mic and is recording, or a send is waiting for its last words.
+    private var agentVoiceLive: Bool { (replyDictating && agentVoice != nil) || voiceFinishing }
+
+    /// A send while Claude has the mic (Send, the Return cap, the keyboard's Return): stop
+    /// recording, wait with a spinner on the mic until Claude has written the last words
+    /// into its prompt, then submit: the reply's text if there is any, else Return. Return
+    /// sent at once submitted the prompt without its last words.
+    private func submitAfterVoice() {
+        guard !voiceFinishing else { return }
+        voiceFinishing = true
+        voiceStopToken += 1
+        Task {
+            await client.settleAgentVoice(pane: paneID)
+            voiceFinishing = false
+            if hasReplyContent { sendTapped() } else { send(.key("Enter")) }
+        }
+    }
+
     private var hasReplyContent: Bool {
         !replyAttachments.isEmpty || !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -5832,7 +5803,8 @@ struct TerminalPaneContent: View {
         #endif
         // contains("claude") to stay consistent with DesignSystem's agent-kind colour/glyph mapping,
         // so a claude-family kind is classified uniformly everywhere.
-        return (agent?.agent?.contains("claude") ?? false) && !tuiClassicPrompted
+        // It is about terminal scrolling: the Chat view has nothing to offer it for.
+        return (agent?.agent?.contains("claude") ?? false) && !tuiClassicPrompted && !showingChat
     }
 
     /// The UI text-size setting. Read in `body` only to observe it, so the pane
@@ -5869,10 +5841,12 @@ struct TerminalPaneContent: View {
                 // tap enables direct PTY input; the reply bar remains the deliberate
                 // prompt path for agent messages.
                 LiveTerminalView(client: client, paneID: paneID,
+                                 geometryKey: agent?.session.map { "\($0)/\(paneID)" },
                                  onNavigate: onNavigate, isForeground: isForeground,
                                  // Releases the width claim while the scene is in the
                                  // background; cleared with the remount decision below.
-                                 sceneBackgrounded: wasBackgrounded,
+                                 // Picture in Picture keeps showing the pane, so it keeps it.
+                                 sceneBackgrounded: wasBackgrounded && !pip.isActive,
                                  // The find and reply fields own their own responders.
                                  // Terminal focus is never inferred from device idiom.
                                  wantsTerminalKeyFocus: isForeground && !replyFocused && !findFocused
@@ -5884,6 +5858,11 @@ struct TerminalPaneContent: View {
                                  onTerminalFocusRequest: {
                                      replyFocused = false
                                      terminalInputFocused = true
+                                 },
+                                 takesReturn: {
+                                     guard agentVoiceLive else { return false }
+                                     submitAfterVoice()
+                                     return true
                                  },
                                  jumpToTailToken: jumpToTailToken,
                                  onTailStateChange: { terminalAtTail = $0 },
@@ -6213,6 +6192,10 @@ struct TerminalPaneContent: View {
     /// The header's ⋯ overflow — the per-agent mute today, and the home for future
     /// per-agent actions. When muted, the button shows a struck bell so the state reads
     /// at a glance without opening the menu.
+    /// An agent from another herdr session (the All view): avatars and push mutes are keyed
+    /// on the connected session's server, so they are not offered for it.
+    private var fromOtherSession: Bool { agent?.session != nil }
+
     private var agentActionsMenu: some View {
         Menu {
             TerminalCopyMenuSection(client: client, paneID: paneID)
@@ -6236,14 +6219,16 @@ struct TerminalPaneContent: View {
                 } label: { Label("Share with someone", systemImage: "person.badge.plus") }
                 .accessibilityIdentifier("terminal-share")
             }
-            if agent != nil, avatars?.canEdit == true {
+            if agent != nil, !fromOtherSession, avatars?.canEdit == true {
                 AgentAvatarMenuButton { editingAvatar = true }
             }
-            Button {
-                mute.toggle(paneID)
-            } label: {
-                Label(mute.isMuted(paneID) ? "Unmute notifications" : "Mute notifications",
-                      systemImage: mute.isMuted(paneID) ? "bell" : "bell.slash")
+            if !fromOtherSession {
+                Button {
+                    mute.toggle(paneID)
+                } label: {
+                    Label(mute.isMuted(paneID) ? "Unmute notifications" : "Mute notifications",
+                          systemImage: mute.isMuted(paneID) ? "bell" : "bell.slash")
+                }
             }
             Button(role: .destructive) {
                 Task {
@@ -6254,7 +6239,7 @@ struct TerminalPaneContent: View {
                 Label("Close agent", systemImage: "xmark.circle")
             }
         } label: {
-            PaneActionsMenuLabel(notificationsOff: mute.isMuted(paneID))
+            PaneActionsMenuLabel(notificationsOff: !fromOtherSession && mute.isMuted(paneID))
         }
         .accessibilityIdentifier("terminal-actions")
         .sheet(isPresented: $editingAvatar) {
@@ -6610,7 +6595,8 @@ struct TerminalPaneContent: View {
             ComposerTextField(
                 text: $reply,
                 // Dictation owns the field; an upload must not resign its first responder.
-                isEnabled: !replyDictating,
+                // Claude's own voice writes into its prompt instead, so the field stays live.
+                isEnabled: !replyDictating || agentVoice != nil,
                 isFocused: replyFocused,
                 onFocusChange: { focused in
                     replyFocused = focused
@@ -6620,6 +6606,7 @@ struct TerminalPaneContent: View {
                     handleReplyChange(old: oldValue, new: newValue)
                 },
                 onReturn: { currentText in
+                    if agentVoiceLive { submitAfterVoice(); return }
                     guard !sending, !replyDictating,
                           !replyAttachments.isEmpty
                             || !currentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -6649,16 +6636,20 @@ struct TerminalPaneContent: View {
                 ComposerAttachButton(busy: loadingReplyAttachment) { openReplyAttachSheet() }
                     .disabled(sending || autoDelivering || loadingReplyAttachment)
                     .accessibilityIdentifier("terminal-attach-button")
-                MicButton(text: $reply,
-                          isActive: isForeground && !autoDelivering, recording: $replyDictating,
-                          onStart: { ctrlArmed = false })
-                    .fixedSize()
-                    .disabled(sending || autoDelivering)
-                if !hasReplyContent {
+                if let agentVoice {
+                    MicButton(text: $reply,
+                              isActive: isForeground && !autoDelivering, recording: $replyDictating,
+                              onStart: { ctrlArmed = false }, agentVoice: agentVoice,
+                              stopToken: voiceStopToken, finishing: voiceFinishing)
+                        .fixedSize()
+                        .disabled(sending || autoDelivering)
+                }
+                if !hasReplyContent && !agentVoiceLive {
                     SavedPromptsMenu(onSelect: usePrompt)
                         .disabled(sending || autoDelivering || replyDictating)
                 } else {
                     Button {
+                        if agentVoiceLive { submitAfterVoice(); return }
                         sendTapped()
                         terminalInputFocused = false
                         if UIDevice.current.userInterfaceIdiom == .phone {
@@ -6666,10 +6657,10 @@ struct TerminalPaneContent: View {
                             replyFocused = false
                         }
                     } label: {
-                        ComposerActionIcon(image: Image("ComposerSend"), primary: true, busy: sending,
+                        ComposerActionIcon(image: Image("ComposerSend"), primary: true, busy: sending || voiceFinishing,
                                            progress: replyUploader.sendProgress(replyAttachments, sending: sending))
                     }
-                    .disabled(!canSend)
+                    .disabled(!canSend && !(agentVoiceLive && !voiceFinishing && !sending))
                     .fixedSize()
                     .accessibilityLabel("Send reply")
                     .accessibilityIdentifier("terminal-send-button")
@@ -6939,6 +6930,10 @@ struct TerminalPaneContent: View {
         // control-bar caps: this funnel also carries the reply submit, the saved-prompt
         // send and the raw sequences. The automatic pre-fill delivery is excluded on
         // purpose — nobody touched anything, so there is no user act to honour.
+        if action == .key("Enter"), agentVoiceLive {
+            submitAfterVoice()
+            return
+        }
         if !autoDelivering { userInputToken += 1 }
         if case .submitText(let text) = action, !replyAttachments.isEmpty {
             sendPromptWithAttachments(text, attachments: replyAttachments)
@@ -7569,9 +7564,6 @@ struct SettingsView: View {
     /// Whether the connected machine can send push (`notifications.status`); nil until the first
     /// answer. Refreshed with the permission on appear and on foreground.
     @State private var pushAvailability: PushAvailability?
-    /// The tip jar (StoreKit 2). Renders nothing until products load, so the section
-    /// is invisible before the App Store Connect products exist.
-    @ObservedObject private var tipStore = TipStore.shared
     /// Opens the Privacy/Terms/GitHub links in the system browser. Overridable in
     /// previews/UI-tests so automated runs never actually leave the app.
     @Environment(\.openURL) private var openURL
@@ -7646,9 +7638,6 @@ struct SettingsView: View {
         } message: {
             Text(federationError ?? "")
         }
-        // Load the tip products when Settings opens. No-ops after a successful load;
-        // re-tries after a prior failure, so products created in ASC later appear.
-        .task { await tipStore.loadProducts() }
         // Fetch the credential accounts for the Accounts section when Settings opens.
         // `try?` so an older daemon without `accounts.list` (or a transient failure)
         // just leaves the section empty rather than surfacing an error here.
@@ -7791,7 +7780,6 @@ struct SettingsView: View {
                                 previewsSection
                                 troubleSection
                                 helpSection
-                                supportSection
                                 aboutSection
                                 Group {
                                     versionFooter
@@ -7841,7 +7829,7 @@ struct SettingsView: View {
     /// iPad/Mac "Text & typing": the same controls the iPhone index shows inline, given
     /// their own split-view detail so the settings are reachable on regular-width layouts.
     private func appearanceDetail(showBack: Bool) -> some View {
-        detailScaffold(title: "Text & typing", subtitle: "Text size, instant typing and omp chat", showBack: showBack) {
+        detailScaffold(title: "Text & typing", subtitle: "Text size, instant typing and agent chat", showBack: showBack) {
             appearanceControls
             typingSection
             chatSection
@@ -7968,12 +7956,11 @@ struct SettingsView: View {
 
     /// iPad "App & About": the light sections that stay inline on the iPhone index.
     private func aboutDetail(showBack: Bool) -> some View {
-        detailScaffold(title: "App & About", subtitle: "Previews, trouble, help, support & legal",
+        detailScaffold(title: "App & About", subtitle: "Previews, trouble, help & legal",
                        showBack: showBack) {
             previewsSection
             troubleSection
             helpSection
-            supportSection
             aboutSection
             Group {
                 versionFooter
@@ -8958,10 +8945,10 @@ struct SettingsView: View {
                         "This machine sends alerts with its own Apple push key.")
             case .unconfigured where status.mode == "direct":
                 return ("bell.slash", Palette.waiting, "This machine can't send notifications yet",
-                        "Herdr is set to push directly but has no Apple push key. Set push.mode to \"auto\" in Herdr's config to use the HerdrUp relay.")
+                        "Herdr is set to push directly but has no Apple push key. Add the Simcast push key to the [push] section of Herdr's config on this machine.")
             case .unconfigured:
                 return ("bell.slash", Palette.waiting, "This machine can't send notifications yet",
-                        "This iPhone hasn't joined the HerdrUp push relay yet. Allow notifications, then reopen HerdrUp while connected.")
+                        "This machine has no Apple push key yet. Add the Simcast push key to the [push] section of Herdr's config on this machine.")
             case .off:
                 return ("bell.slash", Palette.textDim, "Notifications are turned off in Herdr on this machine",
                         "Set push.mode to \"auto\" in Herdr's config on this machine to turn them on.")
@@ -9087,16 +9074,16 @@ struct SettingsView: View {
         }
     }
 
-    /// "omp agents open in": Chat (default) or Terminal (#481). The page's switch overrides
+    /// "Agents open in": Chat (default) or Terminal (#481). The page's switch overrides
     /// it per agent for the session.
     private var chatSection: some View {
         VStack(alignment: .leading, spacing: 0) {
-            sectionLabel("OMP CHAT")
+            sectionLabel("CHAT")
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 12) {
-                    Text("omp agents open in").font(Typography.app(17)).foregroundStyle(Palette.text)
+                    Text("Agents open in").font(Typography.app(17)).foregroundStyle(Palette.text)
                     Spacer(minLength: 8)
-                    Picker("omp agents open in", selection: $ompOpensIn) {
+                    Picker("Agents open in", selection: $ompOpensIn) {
                         Text("Chat").tag(ChatPreference.chat)
                         Text("Terminal").tag(ChatPreference.terminal)
                     }
@@ -9108,7 +9095,7 @@ struct SettingsView: View {
                 .padding(.horizontal, 18).padding(.vertical, 8)
                 .frame(minHeight: 52)
                 rowDivider
-                Text("Chat shows omp's replies, thinking and steps as a conversation. Claude Code and Codex agents always open in the terminal.")
+                Text("Chat shows an agent's replies, thinking and steps as a conversation, and sends your messages straight into its session. Switch to Terminal on the agent's page for the raw session.")
                     .font(Typography.app(12)).foregroundStyle(Palette.textFaint)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 18).padding(.vertical, 12)
@@ -9319,83 +9306,6 @@ struct SettingsView: View {
             linkRow("Terms of Service", systemImage: "doc.text",
                     url: URL(string: "https://herdrup.themartian.app/legal/terms")!)
         }
-    }
-
-    /// The tip jar (StoreKit 2). Renders ONLY when products are loaded — `.idle`,
-    /// `.loading`, and `.unavailable` all render nothing, so the section is simply
-    /// absent before the App Store Connect products exist or when offline.
-    @ViewBuilder
-    private var supportSection: some View {
-        if case .loaded(let products) = tipStore.loadState, !products.isEmpty {
-            VStack(alignment: .leading, spacing: 0) {
-                sectionLabel("SUPPORT THE PROJECT")
-                VStack(spacing: 0) {
-                    ForEach(Array(products.enumerated()), id: \.element.id) { index, product in
-                        tipRow(product)
-                        if index < products.count - 1 { rowDivider }
-                    }
-                }
-                .settingsGroup()
-                .padding(.horizontal, 16).padding(.top, 10)
-                supportFeedback
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var supportFeedback: some View {
-        switch tipStore.purchaseState {
-        case .thankYou:
-            Text("Thank you, it means a lot.")
-                .font(Typography.app(12, .medium)).foregroundStyle(Palette.done)
-                .padding(.horizontal, 20).padding(.top, 8)
-        case .failed(let message):
-            Text(message)
-                .font(Typography.app(12)).foregroundStyle(Palette.died)
-                .padding(.horizontal, 20).padding(.top, 8)
-        case .idle, .purchasing:
-            EmptyView()
-        }
-    }
-
-    private func tipRow(_ product: Product) -> some View {
-        Button { Task { await tipStore.purchase(product) } } label: {
-            HStack(spacing: 12) {
-                Image(systemName: tipGlyph(for: product.id))
-                    .font(.system(size: 15, weight: .semibold)).foregroundStyle(Palette.textDim)
-                    .frame(width: 30, height: 30)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(Palette.surfaceRaised))
-                Text(product.displayName.isEmpty ? tipFallbackName(product.id) : product.displayName)
-                    .font(Typography.app(15)).foregroundStyle(Palette.text)
-                Spacer()
-                if isPurchasing(product) {
-                    ProgressView().tint(Palette.textDim)
-                } else {
-                    Text(product.displayPrice)
-                        .font(Typography.machine(13, .semibold)).foregroundStyle(Palette.text)
-                }
-            }
-            .padding(.horizontal, 18).padding(.vertical, 14)
-        }
-        .buttonStyle(.plain)
-        .disabled(isPurchasing(product))
-    }
-
-    private func isPurchasing(_ product: Product) -> Bool {
-        if case .purchasing(let id) = tipStore.purchaseState { return id == product.id }
-        return false
-    }
-
-    private func tipGlyph(for id: String) -> String {
-        if id == TipStore.coffeeID { return "cup.and.saucer.fill" }
-        if id == TipStore.lunchID { return "fork.knife" }
-        return "wineglass.fill"
-    }
-
-    private func tipFallbackName(_ id: String) -> String {
-        if id == TipStore.coffeeID { return "Coffee" }
-        if id == TipStore.lunchID { return "Lunch" }
-        return "Dinner"
     }
 
     /// The app names itself here — "herdrup mobile <version> (<build>)" — with the
@@ -9983,6 +9893,9 @@ struct SessionsMockTransport: SessionListingTransport {
     }
     func roundTrip(_ requestLine: String, inSession session: String?) async throws -> String {
         try await base.roundTrip(requestLine)
+    }
+    func sessionTransport(_ session: String?) -> any HerdrTransport {
+        SessionsMockTransport(session: session)
     }
 }
 

@@ -74,8 +74,11 @@ public enum AgentGroup: Int, Equatable, Sendable, CaseIterable, Comparable {
     /// new upstream state permanently unobservable. Being wrong here is cheap —
     /// a stale row shown too prominently. Being wrong the other way is silent.
     case unrecognised = 2
-    case working = 3
-    case idle = 4
+    /// Finished a turn the user has not looked at yet. Above working, as herdr's own
+    /// agent panel sorts it (herdr src/app/agent_view.rs `agent_entry_attention_priority`).
+    case done = 3
+    case working = 4
+    case idle = 5
 
     public static func < (a: AgentGroup, b: AgentGroup) -> Bool {
         a.rawValue < b.rawValue
@@ -86,15 +89,11 @@ public enum AgentGroup: Int, Equatable, Sendable, CaseIterable, Comparable {
         case .needsYou: return "needs you"
         case .stopped: return "stopped"
         case .unrecognised: return "unrecognised"
+        case .done: return "done"
         case .working: return "working"
         case .idle: return "idle"
         }
     }
-
-    /// Whether the section starts collapsed. Only the quiet tail does — a
-    /// collapsed group must never be able to hide something wanting attention,
-    /// which is why `.unrecognised` is not in here.
-    public var startsCollapsed: Bool { self == .idle }
 }
 
 /// One row of the list, and the grouping decision for it.
@@ -113,7 +112,9 @@ public struct AgentRow: Equatable, Sendable, Identifiable {
     public init(info: AgentInfo, isLive: Bool = true) {
         self.info = info
         self.isLive = isLive
-        let status = AgentStatus(wire: info.agentStatus)
+        var status = AgentStatus(wire: info.agentStatus)
+        // Idle at its prompt with background shells or subagents running is still running.
+        if info.background != nil, status == .idle || status == .done { status = .working }
         self.status = status
         self.group = AgentRow.resolvedGroup(info: info, status: status, isLive: isLive)
     }
@@ -197,7 +198,8 @@ public struct AgentRow: Equatable, Sendable, Identifiable {
         switch status {
         case .blocked: return .needsYou
         case .working: return .working
-        case .idle, .done: return .idle
+        case .done: return .done
+        case .idle: return .idle
         // Both of these mean "this build cannot say what is happening", and
         // both surface rather than sink. They stay SEPARATE cases in the status
         // type so a diagnostic can tell "the server could not tell" from "this
@@ -230,6 +232,9 @@ public struct AgentList: Equatable, Sendable {
     /// nothing from you. Rendered in the screen's own collapsed "Archived" section,
     /// most-recently-archived first.
     public let archived: [AgentRow]
+
+    /// Each caller's folded subagents, by the caller's row id, most urgent first.
+    public let subagents: [String: [AgentRow]]
 
     /// What the top of the screen says. Counts the `needsYou` GROUP, not the retained
     /// status. Reading `status.isBlocked` directly meant a blocked agent whose pane had
@@ -288,7 +293,7 @@ public struct AgentList: Equatable, Sendable {
             case .needsYou:     return r.hasUnconfirmedState ? 1 : 0
             case .unrecognised: return 2
             case .working:      return 3
-            case .idle:         return 4
+            case .done, .idle:  return 4
             case .stopped:      return 5
             }
         }
@@ -333,6 +338,8 @@ public struct AgentList: Equatable, Sendable {
         public let workingSinceUnixSeconds: Double?
         public let blockedSinceUnixSeconds: Double?
         public let agentID: String?
+        /// What the lead is asking (herdr's `pending_request`), only while it needs you.
+        public let question: String?
     }
 
     /// THE ATTENTION COUNTS DIVERGE FROM THE ROSTER'S ON PURPOSE, and this is the reason.
@@ -357,7 +364,7 @@ public struct AgentList: Equatable, Sendable {
         case .needsYou, .unrecognised: word = "needsYou"
         case .stopped:                 word = "stopped"
         case .working:                 word = "working"
-        case .idle, .none:             word = "idle"
+        case .done, .idle, .none:      word = "idle"
         }
         let attention = rows.filter { $0.group == .needsYou || $0.group == .unrecognised }.count
         let unconfirmed = rows.filter {
@@ -381,7 +388,8 @@ public struct AgentList: Equatable, Sendable {
             totalCount: rows.count,
             workingSinceUnixSeconds: since,
             blockedSinceUnixSeconds: blockedSince,
-            agentID: lead?.info.paneID)
+            agentID: lead?.info.id,
+            question: word == "needsYou" ? lead?.info.pendingRequest : nil)
     }
 
     /// THE WORDING SPEC for "N need you", in HerdrKit so every surface can share one rule
@@ -416,7 +424,7 @@ public struct AgentList: Equatable, Sendable {
     }
 
     public static func == (a: AgentList, b: AgentList) -> Bool {
-        a.rows == b.rows && a.archived == b.archived
+        a.rows == b.rows && a.archived == b.archived && a.subagents == b.subagents
     }
 
     /// Builds the list from an `agent.list` response.
@@ -435,26 +443,51 @@ public struct AgentList: Equatable, Sendable {
         self.archived = archivedInfos
             .map { AgentRow(info: $0, isLive: false) }
             .sorted { ($0.info.archived?.at ?? "") > ($1.info.archived?.at ?? "") }
-        let rows = liveInfos.map { info in
+        let allRows = liveInfos.map { info in
             AgentRow(info: info, isLive: livePaneIDs.map { $0.contains(info.paneID) } ?? true)
         }
-        // Group order first (the screen's primary signal — "does anything need me").
-        // WITHIN a group, most-recently-active first: the agent whose last turn
-        // completed most recently sorts to the top, using the server's wall-clock
-        // `completed_unix_ms`. Agents with no completed turn yet sort last. paneID is
-        // the final tiebreak — unique and stable as the agent works — so the list only
-        // reshuffles when an agent is genuinely more recent, never on an unchanged
-        // refresh where every timestamp is equal.
-        let ordered = rows.sorted { a, b in
-            if a.group != b.group { return a.group < b.group }
-            let ta = a.info.lastCompletedTurn?.completedUnixMs ?? Int64.min
-            let tb = b.info.lastCompletedTurn?.completedUnixMs ?? Int64.min
-            if ta != tb { return ta > tb }
-            return a.info.paneID < b.info.paneID
+        // A subagent folds under its caller, the agent of its session and workspace that is
+        // not one (herdr's workspace lead), as herdr's agent panel folds it. Folded, it counts
+        // toward nothing. With no caller listed it keeps a row of its own.
+        func workspace(_ row: AgentRow) -> String? {
+            row.info.workspaceID.map { "\(row.info.session ?? "")|\($0)" }
         }
+        var callerOf: [String: String] = [:]
+        for row in allRows where !row.info.isSubagent {
+            if let key = workspace(row), callerOf[key] == nil { callerOf[key] = row.id }
+        }
+        var folded: [String: [AgentRow]] = [:]
+        let rows = allRows.filter { row in
+            guard row.info.isSubagent, let caller = workspace(row).flatMap({ callerOf[$0] }) else { return true }
+            folded[caller, default: []].append(row)
+            return false
+        }
+        // Group order first (the screen's primary signal — "does anything need me").
+        // WITHIN a group, latest state change first, as herdr's agent panel sorts
+        // (`state_change_seq` desc). That counter is per server, so across sessions the
+        // wall-clock `status_since_unix_ms` stands in for it, falling back to the last
+        // completed turn on an older server. Agents with neither sort last. The id is
+        // the final tiebreak — unique and stable — so an unchanged refresh never reshuffles.
+        func changed(_ r: AgentRow) -> Int64 {
+            statusAnchorUnixMs(statusSinceUnixMs: r.info.statusSinceUnixMs,
+                               lastCompletedUnixMs: r.info.lastCompletedTurn?.completedUnixMs) ?? Int64.min
+        }
+        func before(_ a: AgentRow, _ b: AgentRow, _ ga: AgentGroup, _ gb: AgentGroup) -> Bool {
+            if ga != gb { return ga < gb }
+            let ta = changed(a), tb = changed(b)
+            if ta != tb { return ta > tb }
+            return a.info.id < b.info.id
+        }
+        let subagents = folded.mapValues { $0.sorted { before($0, $1, $0.group, $1.group) } }
+        // A caller sorts where the most urgent of it and its subagents would.
+        func placement(_ row: AgentRow) -> AgentGroup {
+            min(row.group, subagents[row.id]?.first?.group ?? row.group)
+        }
+        let ordered = rows.sorted { before($0, $1, placement($0), placement($1)) }
         self.rows = ordered
+        self.subagents = subagents
         self.sections = AgentGroup.allCases.compactMap { group in
-            let inGroup = ordered.filter { $0.group == group }
+            let inGroup = ordered.filter { placement($0) == group }
             return inGroup.isEmpty ? nil : (group, inGroup)
         }
     }
@@ -588,6 +621,30 @@ private let isoResetParser: ISO8601DateFormatter = {
     f.formatOptions = [.withInternetDateTime]
     return f
 }()
+
+/// What is left of one provider's rate limits, for the home-screen widgets.
+public struct ProviderUsage: Equatable, Sendable {
+    public let provider: String
+    public let remainingPercent: Double
+    /// The window that will stop the account first, e.g. "5h" or "weekly".
+    public let window: String
+    public let resetsAt: Date?
+}
+
+/// Claude's then Codex's remaining usage: each provider's active account (or its first),
+/// measured by its tightest window. A provider with no account or no usage is left out.
+public func providerUsage(accounts: [CredentialAccount]) -> [ProviderUsage] {
+    ["claude", "codex"].compactMap { kind in
+        let mine = accounts.filter { $0.kind == kind }
+        guard let account = mine.first(where: \.active) ?? mine.first,
+              let tightest = account.usage?.effectiveWindows
+                .compactMap({ window in window.usedPercent.map { (window, $0) } })
+                .max(by: { $0.1 < $1.1 })
+        else { return nil }
+        return ProviderUsage(provider: kind, remainingPercent: min(100, max(0, 100 - tightest.1)),
+                             window: tightest.0.label, resetsAt: parseResetInstant(tightest.0.resetsAt))
+    }
+}
 
 /// The reset token shown beside a usage bar: how much is left when the reset is near,
 /// the calendar date when it is not.

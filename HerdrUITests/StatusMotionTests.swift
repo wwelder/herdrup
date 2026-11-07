@@ -54,15 +54,11 @@ final class StatusMotionTests: XCTestCase {
     }
 
     /// The owner's report (build 203): Agents → Gram → Agents left the working ring stuck.
-    /// One launch for the three moments the ring must turn: first open, back from Gram, back
-    /// from Settings (each tab switch builds a fresh motion that must start).
+    /// One launch for the two moments the ring must turn: first open, and back from Settings
+    /// (each tab switch builds a fresh motion that must start).
     func testRingTurnsOnOpenAndAfterTabSwitches() {
         let app = launchList()
         XCTAssertTrue(moves(ring(app)), "the working row's ring turns")
-        app.buttons["Gram"].firstMatch.tap()
-        sleep(1)
-        app.buttons["Agents"].firstMatch.tap()
-        XCTAssertTrue(moves(ring(app)), "back from Gram, the working row's ring turns again")
         app.buttons["Settings"].firstMatch.tap()
         sleep(1)
         app.buttons["Agents"].firstMatch.tap()
@@ -70,9 +66,9 @@ final class StatusMotionTests: XCTestCase {
         app.terminate()
     }
 
-    /// The working pane's header dot, left for Gram and fronted again (iPhone: back to the
+    /// The working pane's header dot, left for Settings and fronted again (iPhone: back to the
     /// roster and the row again; iPad: the pane stays beside the roster).
-    func testPaneDotPulsesAfterGram() {
+    func testPaneDotPulsesAfterSettings() {
         let pad = UIDevice.current.userInterfaceIdiom == .pad
         let app = launchList()
         let row = app.staticTexts["herdr-app"].firstMatch
@@ -82,7 +78,7 @@ final class StatusMotionTests: XCTestCase {
         XCTAssertTrue(moves(dot(app)), "the working pane's dot pulses")
 
         if !pad { app.buttons["Back"].firstMatch.tap() }
-        app.buttons["Gram"].firstMatch.tap()
+        app.buttons["Settings"].firstMatch.tap()
         sleep(1)
         app.buttons["Agents"].firstMatch.tap()
         if !pad {
@@ -90,12 +86,12 @@ final class StatusMotionTests: XCTestCase {
             XCTAssertTrue(app.terminalSurface.waitForExistence(timeout: 10),
                           "the kept-alive pane should come back to the front")
         }
-        XCTAssertTrue(moves(dot(app)), "back from Gram, the working pane's dot pulses again")
+        XCTAssertTrue(moves(dot(app)), "back from Settings, the working pane's dot pulses again")
         app.terminate()
     }
 
     /// The list mock has one working agent, herdr-app: its roster ring turns, its open pane's
-    /// dot pulses. Covered by the pane (iPhone) the ring stops; behind Gram and Settings the
+    /// dot pulses. Covered by the pane (iPhone) the ring stops; behind Settings the
     /// kept-alive pane's dot stops too. Back on Agents, and back from the Home screen, the
     /// same shapes move again.
     func testHiddenStatusShapesHoldStill() {
@@ -119,13 +115,9 @@ final class StatusMotionTests: XCTestCase {
         XCTAssertEqual(moving(app), pad ? 2 : 1, "only what is on screen moves with the pane open")
 
         if !pad { app.buttons["Back"].firstMatch.tap() }
-        app.buttons["Gram"].firstMatch.tap()
-        sleep(1)
-        XCTAssertEqual(moving(app), 0, "nothing moves behind Gram: the kept-alive pane holds still")
-
         app.buttons["Settings"].firstMatch.tap()
         sleep(1)
-        XCTAssertEqual(moving(app), 0, "nothing moves behind Settings")
+        XCTAssertEqual(moving(app), 0, "nothing moves behind Settings: the kept-alive pane holds still")
 
         app.buttons["Agents"].firstMatch.tap()
         sleep(1)

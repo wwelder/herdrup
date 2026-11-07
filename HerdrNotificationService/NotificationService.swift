@@ -1,8 +1,10 @@
 import UserNotifications
+import WidgetKit
 
-/// Gives an omp question push (#483) its answer buttons. iOS runs this for every push with
-/// `mutable-content`; only one carrying an owner's answerable `herdr_ask` is changed, and
-/// every other push is delivered exactly as it arrived.
+/// Gives an omp question push (#483) its answer buttons, and lets a critical gram fall back to
+/// time-sensitive while critical alerts are not allowed. iOS runs this for every push with
+/// `mutable-content`; only those two are changed, and every other push is delivered exactly
+/// as it arrived (agent alerts also update the home-screen widgets' snapshot).
 ///
 /// Buttons need a registered category, and each question's buttons are its own options, so
 /// each question registers a category of its own before its notification is shown. The
@@ -19,15 +21,33 @@ final class NotificationService: UNNotificationServiceExtension {
                              withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void) {
         self.contentHandler = contentHandler
         original = request.content
-        guard let ask = AskPush(userInfo: request.content.userInfo),
+        // Any agent alert, answerable or not, moves the home-screen widgets' waiting agent.
+        if let next = WidgetSnapshot.applying(alert: request.content.userInfo,
+                                              to: WidgetSnapshot.load(), now: Date()) {
+            next.save()
+            WidgetCenter.shared.reloadAllTimelines()
+        }
+        let ask = AskPush(userInfo: request.content.userInfo)
+        let critical = (request.content.userInfo["aps"] as? [String: Any])?["interruption-level"] as? String == "critical"
+        guard ask != nil || critical,
               let content = request.content.mutableCopy() as? UNMutableNotificationContent else {
             contentHandler(request.content)
             return
         }
-        let category = AskCategory(ask)
         Task {
-            await Self.register(category)
-            content.categoryIdentifier = category.identifier
+            if let ask {
+                let category = AskCategory(ask)
+                await Self.register(category)
+                content.categoryIdentifier = category.identifier
+            }
+            // An agent's emergency (`herdr gram send --critical`). Until the app holds Apple's
+            // critical-alerts entitlement and the owner allows it, iOS would show it as an
+            // ordinary alert; time-sensitive at least breaks through Focus.
+            if critical,
+               await UNUserNotificationCenter.current().notificationSettings().criticalAlertSetting != .enabled {
+                content.interruptionLevel = .timeSensitive
+                content.sound = .default
+            }
             self.finish(content)
         }
     }

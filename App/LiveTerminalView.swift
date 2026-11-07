@@ -77,6 +77,9 @@ struct FindRequest: Equatable {
 struct LiveTerminalView: UIViewRepresentable {
     let client: HerdrClient
     let paneID: String
+    /// The width-claim registry key: `paneID` qualified by its herdr session when the pane
+    /// comes from another one (pane ids repeat across sessions, each a different PTY).
+    var geometryKey: String? = nil
     /// Called when the reader swipes horizontally to page between agents: +1 for the
     /// next agent (swipe left), -1 for the previous (swipe right). Nil (or a no-op) when
     /// there is no list context to page through. Refreshed on every update so the
@@ -120,6 +123,9 @@ struct LiveTerminalView: UIViewRepresentable {
     /// Called after a terminal tap requests direct PTY input. The parent owns the
     /// SwiftUI focus state so a reply submission can dismiss the keyboard reliably.
     var onTerminalFocusRequest: () -> Void = {}
+    /// Asked when the reader types Return into the terminal; true takes the key, and it is
+    /// not sent (the host submits it itself once the agent's voice has settled).
+    var takesReturn: () -> Bool = { false }
     /// Called on the main actor when the live stream ends (nil = closed cleanly), before
     /// the view decides whether to reconnect. Lets a host react to why it ended.
     var onStreamEnded: (Error?) -> Void = { _ in }
@@ -190,7 +196,7 @@ struct LiveTerminalView: UIViewRepresentable {
         #endif
     }()
 
-    func makeCoordinator() -> Coordinator { Coordinator(client: client, paneID: paneID) }
+    func makeCoordinator() -> Coordinator { Coordinator(client: client, paneID: paneID, geometryKey: geometryKey ?? paneID) }
 
     func makeUIView(context: Context) -> TerminalSurfaceView {
         // BEFORE attach, which starts the stream and the geometry drain.
@@ -204,6 +210,7 @@ struct LiveTerminalView: UIViewRepresentable {
         let surface = TerminalSurfaceView(terminal: view)
         context.coordinator.onNavigate = onNavigate
         context.coordinator.onTerminalFocusRequest = onTerminalFocusRequest
+        context.coordinator.takesReturn = takesReturn
         context.coordinator.onStreamEnded = onStreamEnded
         // BEFORE attach, which starts the stream: the first frame must be recorded, or a
         // pane that connects while the app is backgrounding looks stale on return.
@@ -224,6 +231,7 @@ struct LiveTerminalView: UIViewRepresentable {
         let terminalView = uiView.terminal
         context.coordinator.onNavigate = onNavigate
         context.coordinator.onTerminalFocusRequest = onTerminalFocusRequest
+        context.coordinator.takesReturn = takesReturn
         context.coordinator.onStreamEnded = onStreamEnded
         // Live accessors, refreshed every pass: a captured Bool would be a snapshot of
         // the state as it was when this body ran, which is exactly the race that makes
@@ -246,6 +254,12 @@ struct LiveTerminalView: UIViewRepresentable {
         // re-claim exactly once, from whichever of the two flips last.
         context.coordinator.setSceneBackgrounded(sceneBackgrounded)
         context.coordinator.setForeground(isForeground)
+        // The pane in front is what Picture in Picture shows when the app is backgrounded.
+        if isForeground {
+            TerminalPiP.shared.attach(host: uiView, content: terminalView)
+        } else {
+            TerminalPiP.shared.detach(host: uiView)
+        }
         // A kept-alive pane behind another pane, the list, Gram or Settings, and any pane
         // while the scene is not active, holds its caret steady: the blink is a repeating
         // animation that keeps the window compositing (#427).
@@ -339,6 +353,7 @@ struct LiveTerminalView: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ uiView: TerminalSurfaceView, coordinator: Coordinator) {
+        TerminalPiP.shared.detach(host: uiView)
         coordinator.stop()
     }
 
@@ -771,6 +786,8 @@ struct LiveTerminalView: UIViewRepresentable {
     final class Coordinator: NSObject, TerminalViewDelegate, UIGestureRecognizerDelegate {
         private let client: HerdrClient
         private let paneID: String
+        /// Keys `geometryGeneration` / `geometryReleaseTask` (see `LiveTerminalView.geometryKey`).
+        private let geometryKey: String
         /// Stable per-view identity for the daemon's PTY width-lease (#137). Generated
         /// ONCE per Coordinator (= one view = one live `pane.stream`) and sent UNCHANGED
         /// on BOTH this view's `pane.stream` open AND every `pane.set_pty_size` it makes,
@@ -1328,6 +1345,8 @@ struct LiveTerminalView: UIViewRepresentable {
         /// Requests SwiftUI terminal-input focus after a tap. The parent controls
         /// actual responder ownership so it can dismiss the keyboard after Send.
         var onTerminalFocusRequest: (() -> Void)?
+        /// See `LiveTerminalView.takesReturn`. Refreshed by `updateUIView`.
+        var takesReturn: (() -> Bool)?
         /// See `LiveTerminalView.onStreamEnded`. Refreshed by `updateUIView`.
         var onStreamEnded: ((Error?) -> Void)?
         /// Publishes tail state to the host (see `LiveTerminalView.onTailStateChange`).
@@ -1565,9 +1584,10 @@ struct LiveTerminalView: UIViewRepresentable {
         /// (→ zero history on real panes). On timeout we skip history and paint the seed as before.
         static let backfillTimeoutNanos: UInt64 = 6_000_000_000
 
-        init(client: HerdrClient, paneID: String) {
+        init(client: HerdrClient, paneID: String, geometryKey: String) {
             self.client = client
             self.paneID = paneID
+            self.geometryKey = geometryKey
         }
 
         func attach(_ surface: TerminalSurfaceView) {
@@ -1697,8 +1717,8 @@ struct LiveTerminalView: UIViewRepresentable {
             // Claim geometry ownership for this pane (see geometryGeneration): the newest
             // attach wins, and an older coordinator's delayed release checks this before
             // unlocking.
-            let gen = (Self.geometryGeneration[paneID] ?? 0) + 1
-            Self.geometryGeneration[paneID] = gen
+            let gen = (Self.geometryGeneration[geometryKey] ?? 0) + 1
+            Self.geometryGeneration[geometryKey] = gen
             myGeometryGeneration = gen
             // Symmetric with reclaimGeometry: on a fast evict→reopen (or a transient
             // double-mount) of the SAME pane id, a prior coordinator's ALREADY-committed
@@ -1707,9 +1727,9 @@ struct LiveTerminalView: UIViewRepresentable {
             // pending release for this pane has landed. A fresh pane id has no entry → awaits nil
             // → clears at once.
             relockPending = true
-            let pane = paneID
+            let key = geometryKey
             Task { @MainActor [weak self] in
-                await Self.geometryReleaseTask[pane]?.value   // let a prior coordinator's release land first
+                await Self.geometryReleaseTask[key]?.value   // let a prior coordinator's release land first
                 guard let self, !self.stopped, self.myGeometryGeneration == gen else { return }
                 self.relockPending = false
                 if let target = self.desiredTarget, target.cols >= 4, target.rows >= 2 {
@@ -2433,6 +2453,7 @@ struct LiveTerminalView: UIViewRepresentable {
             let rows = target.rows
             let client = self.client
             let pane = self.paneID
+            let key = self.geometryKey
             let myGen = self.myGeometryGeneration
             let viewerID = self.viewerID   // release THIS view's lease (#137), not the pane's
             // CHAIN releases: await the PREVIOUS entry first, so awaiting the newest release
@@ -2440,7 +2461,7 @@ struct LiveTerminalView: UIViewRepresentable {
             // orphan an older ALREADY-committed lock:false (past its generation guard), and a later
             // re-lock — which awaits only the newest entry — could send lock:true before that older
             // lock:false lands, leaving the visible pane unlocked.
-            let previous = Self.geometryReleaseTask[pane]
+            let previous = Self.geometryReleaseTask[key]
             let gate = self.resizeGate
             let release = Task.detached {
                 await previous?.value        // an older release's lock:false must land BEFORE ours
@@ -2450,7 +2471,7 @@ struct LiveTerminalView: UIViewRepresentable {
                 // the lock now — releasing would unlock a pane still on screen. Bail so its
                 // lock:true stands. (And if this release DID commit before the re-claim bumped the
                 // generation, `reclaimGeometry` AWAITS this task before it re-locks.)
-                let current = await MainActor.run { Coordinator.geometryGeneration[pane] }
+                let current = await MainActor.run { Coordinator.geometryGeneration[key] }
                 guard current == myGen else { return }
                 // Through the gate, deciding NOW: the in-flight lock:true awaited above may have
                 // just been refused, and a refused host must not be asked again.
@@ -2463,10 +2484,10 @@ struct LiveTerminalView: UIViewRepresentable {
                 // (which is correct — clearing it there could clobber a live newer release). So the
                 // map holds at most one entry per pane id, overwritten by the next release.
                 await MainActor.run {
-                    if Coordinator.geometryGeneration[pane] == myGen { Coordinator.geometryReleaseTask[pane] = nil }
+                    if Coordinator.geometryGeneration[key] == myGen { Coordinator.geometryReleaseTask[key] = nil }
                 }
             }
-            Self.geometryReleaseTask[pane] = release
+            Self.geometryReleaseTask[key] = release
             return release
         }
 
@@ -2563,8 +2584,8 @@ struct LiveTerminalView: UIViewRepresentable {
         /// Different panes own different PTYs + generation keys, so releases/retakes across
         /// panes never contend.
         private func reclaimGeometry() {
-            let gen = (Self.geometryGeneration[paneID] ?? 0) + 1
-            Self.geometryGeneration[paneID] = gen
+            let gen = (Self.geometryGeneration[geometryKey] ?? 0) + 1
+            Self.geometryGeneration[geometryKey] = gen
             myGeometryGeneration = gen
             // DEFEAT the drain's dedup so the re-assert genuinely re-sends. A released (or
             // lapsed) lease leaves the confirmed target stale-but-EQUAL to the desired one, so
@@ -2574,7 +2595,7 @@ struct LiveTerminalView: UIViewRepresentable {
             // winsize, so it cannot cause the redraw the grace exists to avoid.
             confirmedTarget = nil
             relockPending = true                // defer requests until any release lands
-            let pending = Self.geometryReleaseTask[paneID]
+            let pending = Self.geometryReleaseTask[geometryKey]
             Task { @MainActor [weak self] in
                 await pending?.value            // let any committed lock:false land FIRST
                 guard let self, self.claimsGeometry, !self.stopped,
@@ -3596,6 +3617,7 @@ struct LiveTerminalView: UIViewRepresentable {
             // retain first responder while selection/focus transitions settle.
             guard !stopped, !viewOnly, foreground, directFocusIntended,
                   let v = view, v.isFirstResponder else { return }
+            if data.elementsEqual([13]), takesReturn?() == true { return }
             userTookControl()
             TypingLatencyRecorder.shared.keyPressed()
             let batch = enqueueInput(String(decoding: data, as: UTF8.self))

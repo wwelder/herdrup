@@ -69,7 +69,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         guard ScreenshotMock.mode == nil else { return }
         #endif
         guard PushCenter.Prefs.current.anyEnabled else { return }
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
+        // `.criticalAlert` is for an agent's `herdr gram send --critical`. iOS ignores it until the
+        // app holds Apple's critical-alerts entitlement, then asks once with its own prompt.
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge, .criticalAlert]) { granted, _ in
             guard granted else { return }
             DispatchQueue.main.async { UIApplication.shared.registerForRemoteNotifications() }
         }
@@ -104,7 +106,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
     // A tap on the notification → deep-link. `PushTapTarget` decides: anything carrying
     // `herdr_guest` goes to that share's screens or nowhere, never an owner screen; a gram alert
-    // (`gram: true`, empty `pane_id`) is checked before the pane branch. A question's button
+    // opens the agent that sent it, like any agent alert. A question's button
     // (#483) answers in place instead: no screen opens, and iOS keeps the app alive until this
     // returns, so the answer and its follow-up notification finish first.
     func userNotificationCenter(_ center: UNUserNotificationCenter,
@@ -122,8 +124,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     static func routeTap(userInfo: [AnyHashable: Any]) {
         switch PushTapTarget(userInfo: userInfo) {
         case .guest(let route): PushCenter.shared.tappedGuest(route)
-        case .ownerGram: PushCenter.shared.tappedGram()
-        case .ownerPane(let paneID): PushCenter.shared.tapped(paneID: paneID)
+        case .ownerFeed(let card): PushCenter.shared.pendingFeed = card
+        case .ownerPane(let paneID, let session): PushCenter.shared.tapped(paneID: paneID, session: session)
         case .droppedGuest, .none: break
         }
     }

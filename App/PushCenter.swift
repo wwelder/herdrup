@@ -12,14 +12,12 @@ import SwiftUI
 final class PushCenter: ObservableObject {
     static let shared = PushCenter()
 
-    /// Enrolls device and Live Activity tokens with the push relay, so a machine without its own
-    /// APNs key can still push. Debug builds carry sandbox tokens; TestFlight and the App Store
-    /// carry production ones.
-    #if DEBUG
-    static let relay = PushRelayEnroller(environment: .sandbox)
-    #else
-    static let relay = PushRelayEnroller(environment: .production)
-    #endif
+    /// The publisher's push relay (`push.herdrup.themartian.app`) signs for com.jerryfane.herdr
+    /// only, so it can't deliver to this build's inc.simcast.herdrup tokens. Machines push
+    /// directly instead: herdr's `[push]` config holds the Simcast APNs key, with topic
+    /// inc.simcast.herdrup. With no enroller the app never sends a relay capability.
+    // ponytail: no relay; a Simcast-run PushRelay (sandbox in DEBUG) goes here if per-machine keys get old.
+    static let relay: PushRelayEnroller? = nil
 
     /// The APNs device token (lowercase hex), set by the AppDelegate on registration. Persisted so
     /// a relaunch/reconnect can re-send it to the server before any new registration callback.
@@ -28,10 +26,9 @@ final class PushCenter: ObservableObject {
     /// its agent list has loaded, then clears it. Held here so a cold-launch tap (app was closed)
     /// and a tap during a reconnect both survive until the view can act on it.
     @Published var pendingPaneID: String?
-    /// Set when the user taps a gram push (the payload carries `gram: true`, no pane). The home view
-    /// opens the Gram page then clears it. Held here so a cold-launch tap (app was closed) survives
-    /// until the view can act, exactly like `pendingPaneID`.
-    @Published var pendingGram: Bool = false
+    /// A tapped agent question (`feed` in the payload, `<source>/<id>`): the home view opens
+    /// the Feed tab and hands the card to `FeedStore.opening`. Held like `pendingPaneID`.
+    @Published var pendingFeed: String?
     /// A tapped push for an agent someone shared with this phone (`herdr_guest` in the payload).
     /// The root view opens that share and its home opens the Gram tab or the terminal, then
     /// clears it. Never routed to an owner screen.
@@ -52,17 +49,17 @@ final class PushCenter: ObservableObject {
         guard token != deviceToken else { return }
         deviceToken = token
         UserDefaults.standard.set(token, forKey: Self.tokenKey)
-        Task { _ = await Self.relay.capability(kind: .device, token: token) }
+        Task { _ = await Self.relay?.capability(kind: .device, token: token) }
     }
+
+    /// The herdr session that sent the `pendingPaneID` push; nil for a Live Activity tap or a
+    /// server older than the payload's `session`.
+    var pendingPaneSession: String?
 
     /// A notification was tapped for `paneID` — deep-link to it when the view is ready.
-    func tapped(paneID: String) {
+    func tapped(paneID: String, session: String? = nil) {
+        pendingPaneSession = session
         pendingPaneID = paneID
-    }
-
-    /// A gram push was tapped — open the Gram page when the view is ready.
-    func tappedGram() {
-        pendingGram = true
     }
 
     /// A push for a shared agent was tapped — open that share when the view is ready.

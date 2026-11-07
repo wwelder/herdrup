@@ -98,10 +98,10 @@ struct GuestPaneView: View {
     /// The owner shares this agent's Gram with the guest (the host's hello says so).
     private var showsGram: Bool { features.current?.gram == true }
     private var showingGram: Bool { showsGram && tab == .gram }
-    /// The Chat tab: a shared omp agent on a host that serves guests its transcript, until
+    /// The Chat tab: a shared omp, Claude Code or Codex agent on a host that serves guests its transcript, until
     /// the host says it cannot.
     private var showsChat: Bool {
-        transcriptCapable && ChatPreference.isOmp(agent?.agent) && !chatModel.unsupported
+        transcriptCapable && ChatPreference.hasChat(agent?.agent) && !chatModel.unsupported
     }
     private var showingChat: Bool { showsChat && tab == .chat }
     /// Neither Gram nor Chat covers the terminal.

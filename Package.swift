@@ -94,7 +94,7 @@ let package = Package(
             name: "AgentActivityState",
             path: "Shared",
             exclude: ["AgentActivityAttributes.swift", "Assets.xcassets"],
-            sources: ["AgentActivityState.swift"]),
+            sources: ["AgentActivityState.swift", "WidgetSnapshot.swift"]),
         .testTarget(
             name: "AgentActivityStateTests",
             dependencies: ["AgentActivityState"]),

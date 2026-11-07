@@ -250,7 +250,7 @@ final class ChatModel: ObservableObject {
             switch error {
             case .unsupported: assign(\.unsupported, true)
             case .agentNotFound: assign(\.failure, "This agent is gone.")
-            case .unavailable: assign(\.failure, "omp's session file can't be read right now.")
+            case .unavailable: assign(\.failure, "The agent's session file can't be read right now.")
             case .cursorExpired: assign(\.failure, nil)
             case .subagentNotFound: assign(\.failure, "This subagent's conversation can't be found.")
             }
@@ -718,6 +718,27 @@ struct ChatView: View {
            agentStatus == "working" || (agentStatus == nil && model.working != nil) {
             ChatWorkingDots(intent: model.working?.intent)
         }
+        if waitsInTerminal {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 6) {
+                    Circle().fill(Palette.waiting).frame(width: 7, height: 7)
+                    Text("Waiting for you in the terminal")
+                        .font(Typography.app(14 * textScale, .semibold)).foregroundStyle(Palette.waiting)
+                }
+                Button(action: onOpenTerminal) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "terminal").font(.system(size: 12, weight: .semibold))
+                        Text("Open Terminal").font(Typography.app(14 * textScale, .semibold))
+                    }
+                    .foregroundStyle(Palette.text)
+                    .padding(.horizontal, 14).frame(height: 36)
+                    .background(Capsule().fill(Palette.surfaceRaised))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.vertical, 8)
+            .accessibilityIdentifier("chat-waits-in-terminal")
+        }
         recapDivider
         if let sessionModel = model.sessionModel {
             Text(sessionModel.label)
@@ -732,6 +753,16 @@ struct ChatView: View {
                 .frame(maxWidth: .infinity)
                 .accessibilityIdentifier("chat-failure")
         }
+    }
+
+    /// The agent waits on something only its terminal draws (a Claude Code or Codex permission
+    /// prompt or menu). An omp question the chat can answer shows as its own card instead.
+    private var waitsInTerminal: Bool {
+        guard live, agentStatus == "blocked" else { return false }
+        return !(model.turns.last?.items.contains {
+            if case .ask(_, _, let pending) = $0 { return pending != nil }
+            return false
+        } ?? false)
     }
 
     @ViewBuilder private var recapDivider: some View {
@@ -1399,7 +1430,9 @@ private struct ChatRowView: View, Equatable {
         case .summary(_, let text):
             HStack(spacing: 10) {
                 Rectangle().fill(Palette.hairlineQuiet).frame(height: 1)
-                Text(text).font(Typography.app(13 * textScale)).foregroundStyle(Palette.textFaint).fixedSize()
+                // One line, never wider than the column, whatever an older host sends.
+                Text(text).font(Typography.app(13 * textScale)).foregroundStyle(Palette.textFaint)
+                    .lineLimit(1).layoutPriority(1)
                 Rectangle().fill(Palette.hairlineQuiet).frame(height: 1)
             }
             .padding(.vertical, 4)
@@ -1596,7 +1629,9 @@ private struct ChatRowView: View, Equatable {
                             .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 2.5 }
                         // The tool omp ran, in the theme's accent, as omp's terminal titles it.
                         if !step.tool.isEmpty {
-                            Text(step.tool).font(Typography.machine(11.5 * textScale, .semibold))
+                            // ponytail: a character cap keeps a long tool name from widening the row.
+                            Text(step.tool.count > 20 ? step.tool.prefix(19) + "…" : step.tool)
+                                .font(Typography.machine(11.5 * textScale, .semibold))
                                 .foregroundStyle(Color(hex: ChatPalette.current.toolTitle))
                                 .lineLimit(1)
                                 .fixedSize()

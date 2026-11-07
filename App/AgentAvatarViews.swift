@@ -20,6 +20,9 @@ import HerdrKit
 final class AgentAvatarDirectory {
     /// Fetches photo bytes (`agent.avatar.get`) and saves changes (`agent.avatar.set`).
     var client: HerdrClient?
+    /// Other herdr sessions' clients by session name (the All view): an agent's photo is
+    /// fetched from the session that stores it.
+    @ObservationIgnored var sessionClients: [String: HerdrClient] = [:]
     /// The owner, on a server that advertises `agent_avatar`. False for guests and older
     /// servers: the Avatar… entry points are hidden and nothing can be set.
     var canEdit = false
@@ -79,11 +82,13 @@ final class AgentAvatarDirectory {
 
     /// Fetches a photo not cached yet. Content-addressed, so each one crosses the wire once.
     @MainActor
-    func load(_ sha256: String, target: String) async {
+    func load(_ sha256: String, for info: AgentInfo) async {
+        // Another session's agent waits for that session's client rather than asking this one.
+        let client = info.session.map { sessionClients[$0] } ?? self.client
         guard case .loading = photo(sha256), let client, loading.insert(sha256).inserted else { return }
         defer { loading.remove(sha256) }
         do {
-            let image = try await client.agentAvatarGet(target: target, sha256: sha256)
+            let image = try await client.agentAvatarGet(target: info.avatarTarget, sha256: sha256)
             if cache.store(image.data, sha256: sha256), let decodedImage = UIImage(data: image.data) {
                 decoded[sha256] = decodedImage
             } else {
@@ -212,8 +217,8 @@ struct AgentAvatarView: View {
             }
         }
         .task(id: appearance) {
-            guard case .image(let sha256) = appearance, let target = agent?.avatarTarget else { return }
-            await directory?.load(sha256, target: target)
+            guard case .image(let sha256) = appearance, let agent else { return }
+            await directory?.load(sha256, for: agent)
         }
     }
 

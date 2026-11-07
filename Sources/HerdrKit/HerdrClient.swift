@@ -1,4 +1,5 @@
 import Foundation
+import NIOCore
 
 /// Typed client for the herdr JSON API.
 ///
@@ -111,6 +112,13 @@ public actor HerdrClient {
             throw TransportError.machineCommandFailed(stderr: "Sessions require an SSH connection")
         }
         return try await sessionTransport.listSessions()
+    }
+
+    /// A client for another herdr session on this machine (nil = default), sharing this
+    /// one's SSH connection. nil when the transport can't address other sessions.
+    public nonisolated func forSession(_ session: String?) -> HerdrClient? {
+        guard let sessions = transport as? any SessionListingTransport else { return nil }
+        return HerdrClient(transport: sessions.sessionTransport(session))
     }
 
     /// `agent.list` from another herdr session on the same machine (#347), for the
@@ -285,6 +293,40 @@ public actor HerdrClient {
         try await call("fs.list_dir", FsListDirParams(path: path), as: DirListing.self)
     }
 
+    private struct FeedListResult: Decodable {
+        /// Absent from a herdr that served RSS files (`feeds`) instead of cards.
+        let cards: [FeedCardFile]?
+    }
+
+    /// The machine's feed cards (`feed.list`): what scripts wrote to
+    /// `~/.config/herdr/feeds/<source>/`, unparsed. nil when the machine's herdr predates cards.
+    public func feedList() async throws -> [FeedCardFile]? {
+        do {
+            return try await call("feed.list", EmptyParams(), as: FeedListResult.self).cards
+        } catch let error as APIError where Self.isUnknownMethod(error, "feed.list") {
+            return nil
+        }
+    }
+
+    private struct FeedActParams: Encodable {
+        let source: String
+        let id: String
+        let action: String?
+        let text: String?
+    }
+
+    private struct FeedActResult: Decodable {
+        let output: String?
+    }
+
+    /// Answers a feed card (`feed.act`): one of its actions and/or text. Returns what the
+    /// source's `on-reply` script printed. THROWS `APIError` when herdr refuses the answer
+    /// (`feed_already_answered`, `feed_expired`, …) or the script failed.
+    public func feedAct(source: String, id: String, action: String?, text: String?) async throws -> String? {
+        try await call("feed.act", FeedActParams(source: source, id: id, action: action, text: text),
+                       as: FeedActResult.self).output
+    }
+
     struct AgentKindsResult: Decodable {
         let kinds: [AgentKind]
     }
@@ -412,6 +454,34 @@ public actor HerdrClient {
             return nil
         }
         return await citadel.openPaneInput(openLine: openLine)
+    }
+
+    /// Whether `streamAgentVoice` can reach `pane`: an SSH machine and a local pane.
+    public func canStreamAgentVoice(pane: String) -> Bool {
+        transport is CitadelTransport && CitadelTransport.agentVoiceCommand(pane: pane, session: nil) != nil
+    }
+
+    /// Feeds `audio` (16 kHz mono s16le PCM chunks) to Claude Code's own voice dictation in
+    /// `pane` until the stream finishes; the transcript lands in Claude's prompt. Throws the
+    /// machine's note when it cannot (see `CitadelTransport.agentVoiceScript`).
+    public func streamAgentVoice(pane: String, audio: AsyncStream<Data>) async throws {
+        guard let citadel = transport as? CitadelTransport else {
+            throw TransportError.machineCommandFailed(stderr: "Voice needs an SSH machine.")
+        }
+        let buffers = AsyncStream<ByteBuffer> { continuation in
+            let pump = Task {
+                for await chunk in audio { continuation.yield(ByteBuffer(bytes: chunk)) }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in pump.cancel() }
+        }
+        try await citadel.streamAgentVoice(pane: pane, audio: buffers)
+    }
+
+    /// Call after stopping `streamAgentVoice`: returns once Claude has written the last
+    /// words into `pane`'s prompt (or ~7 s pass), so a Return sent next submits all of them.
+    public func settleAgentVoice(pane: String) async {
+        await (transport as? CitadelTransport)?.settleAgentVoice(pane: pane)
     }
 
     struct RegisterDeviceParams: Encodable {
@@ -652,7 +722,12 @@ public actor HerdrClient {
     struct GramPostParams: Encodable {
         let text: String
         let to: String?
+        let paneID: String?
         let file: GramFileUploadParams?
+        enum CodingKeys: String, CodingKey {
+            case text, to, file
+            case paneID = "pane_id"
+        }
     }
 
     /// The owner posts a message to agents. `to == nil` posts to the shared
@@ -661,13 +736,15 @@ public actor HerdrClient {
     /// `attachment` attaches a file previously uploaded with `gramUploadFile`; the
     /// text may be empty when a file is attached. Returns the stored message.
     @discardableResult
+    /// `paneID` addresses the agent in that pane of this client's session instead of `to`:
+    /// it reaches an agent with no name (herdr from the gram inbox).
     public func gramPost(
-        text: String, to: String? = nil, attachment: GramFileAttachment? = nil
+        text: String, to: String? = nil, paneID: String? = nil, attachment: GramFileAttachment? = nil
     ) async throws -> GramMessage {
         let file = attachment.map {
             GramFileUploadParams(uploadID: $0.uploadID, name: $0.name, mime: $0.mime)
         }
-        return try await call("gram.post", GramPostParams(text: text, to: to, file: file),
+        return try await call("gram.post", GramPostParams(text: text, to: to, paneID: paneID, file: file),
                               as: GramMessageResult.self).message
     }
 
@@ -1076,7 +1153,7 @@ public actor HerdrClient {
         let file = attachment.map {
             GramFileUploadParams(uploadID: $0.uploadID, name: $0.name, mime: $0.mime)
         }
-        return try await call("gram.post", GramPostParams(text: text, to: to, file: file),
+        return try await call("gram.post", GramPostParams(text: text, to: to, paneID: nil, file: file),
                               as: GuestGramPostResult.self).message
     }
 

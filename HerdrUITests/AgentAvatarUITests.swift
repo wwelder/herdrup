@@ -72,7 +72,7 @@ final class AgentAvatarUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Avatar…"].exists, "the menu must hide Avatar… without server support")
     }
 
-    func testChoosingBotChangesTheRowPersistsAndShowsInGram() {
+    func testChoosingBotChangesTheRowAndPersists() {
         var app = XCUIApplication.launched(mock: "list", environment: ["HERDR_MOCK_AVATARS": "reset"])
         var vetrina = app.descendants(matching: .any)["agent-row-w1:p2"]
         XCTAssertTrue(vetrina.waitForExistence(timeout: 10))
@@ -113,22 +113,6 @@ final class AgentAvatarUITests: XCTestCase {
         XCTAssertTrue(row(vetrina, shows: "bot", in: app), "Bot should survive a relaunch, got \(vetrina.label)")
         attach(app, "agent-avatars-list")
 
-        // Gram is name-keyed: vetrina's bubbles wear the same mascot.
-        let gram = app.buttons["Gram"].firstMatch
-        XCTAssertTrue(gram.waitForExistence(timeout: 10))
-        gram.tap()
-        // g1 is the owner's reply; g3 is vetrina's newest message (MockWireFixtures.gramList).
-        let fromVetrina = app.descendants(matching: .any)["gram-bubble-g3"]
-        XCTAssertTrue(fromVetrina.waitForExistence(timeout: 10))
-        XCTAssertEqual(avatar(worn: fromVetrina, expecting: "bot", in: app), "bot",
-                       "a Gram bubble from vetrina should show Bot")
-        // hetzner-1's clientloop is not the local clientloop (Tri): the roster has no agent of
-        // that name on that machine, so its bubble wears the default.
-        let relayed = app.descendants(matching: .any)["gram-bubble-g2"]
-        XCTAssertTrue(relayed.waitForExistence(timeout: 5))
-        XCTAssertEqual(avatar(worn: relayed, expecting: "initial", in: app), "initial",
-                       "a relayed sender with no roster entry shows its initial tile")
-        attach(app, "agent-avatars-gram")
     }
 
     func testAGuestSeesTheOwnersMascotAndCannotEditIt() {

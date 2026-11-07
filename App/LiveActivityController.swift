@@ -69,6 +69,12 @@ final class LiveActivityController: ObservableObject {
     /// resurrecting its banner.
     private var hostLabel: String?
 
+    /// The host APM herdr last pushed to the activity, for the home-screen widgets.
+    var apm: Double? { liveActivity?.content.state.apm }
+
+    /// The host label of the current session, for the home-screen widgets.
+    var currentHostLabel: String? { hostLabel }
+
     /// Whether the system currently permits Live Activities (user toggle + capability).
     private var enabled: Bool { ActivityAuthorizationInfo().areActivitiesEnabled }
 
@@ -181,6 +187,9 @@ final class LiveActivityController: ObservableObject {
             if let hostLabel { start(hostLabel: hostLabel, state: state) }
             return
         }
+        // Only herdr's push measures APM, so the app's own roster updates keep its last one.
+        var state = state
+        if state.apm == nil { state.apm = activity.content.state.apm }
         // staleDate nil for the same reason as in `start`: nothing re-pushes on a cadence,
         // so an elapsed window would mean "the roster did not change", not "the host is gone".
         Task { await activity.update(ActivityContent(state: state, staleDate: nil)) }
@@ -231,6 +240,7 @@ final class LiveActivityController: ObservableObject {
             totalCount: c.totalCount,
             workingSince: c.workingSinceUnixSeconds,
             blockedSince: c.blockedSinceUnixSeconds,
+            question: c.question,
             agentID: c.agentID,
             updatedAt: Date().timeIntervalSince1970
         )
