@@ -370,8 +370,9 @@ public struct AgentInfo: Decodable, Equatable, Sendable, Identifiable {
     /// "3 local agents"). Absent with none and on an older server. Such an agent is
     /// running even while it waits idle at its prompt (`AgentRow`).
     public internal(set) var background: String? = nil
-    /// herdr's flag for a worker another agent spawned (`codex exec`): the owner never sees
-    /// it in the roster. Absent unless true, and on an older server.
+    /// herdr's flag for a worker another agent spawned (`codex exec`, or a Codex agent on
+    /// Codex's shared daemon): the roster hides it unless the owner's filter shows
+    /// subagents. Absent unless true, and on an older server.
     public let subagent: Bool?
     public var isSubagent: Bool { subagent == true }
     /// The herdr session this row was listed from, when the app shows several sessions at

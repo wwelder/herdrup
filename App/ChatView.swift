@@ -1430,7 +1430,9 @@ private struct ChatRowView: View, Equatable {
         case .summary(_, let text):
             HStack(spacing: 10) {
                 Rectangle().fill(Palette.hairlineQuiet).frame(height: 1)
-                Text(text).font(Typography.app(13 * textScale)).foregroundStyle(Palette.textFaint).fixedSize()
+                // One line, never wider than the column, whatever an older host sends.
+                Text(text).font(Typography.app(13 * textScale)).foregroundStyle(Palette.textFaint)
+                    .lineLimit(1).layoutPriority(1)
                 Rectangle().fill(Palette.hairlineQuiet).frame(height: 1)
             }
             .padding(.vertical, 4)
@@ -1627,7 +1629,9 @@ private struct ChatRowView: View, Equatable {
                             .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 2.5 }
                         // The tool omp ran, in the theme's accent, as omp's terminal titles it.
                         if !step.tool.isEmpty {
-                            Text(step.tool).font(Typography.machine(11.5 * textScale, .semibold))
+                            // ponytail: a character cap keeps a long tool name from widening the row.
+                            Text(step.tool.count > 20 ? step.tool.prefix(19) + "…" : step.tool)
+                                .font(Typography.machine(11.5 * textScale, .semibold))
                                 .foregroundStyle(Color(hex: ChatPalette.current.toolTitle))
                                 .lineLimit(1)
                                 .fixedSize()

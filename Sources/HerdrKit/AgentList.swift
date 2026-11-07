@@ -431,10 +431,10 @@ public struct AgentList: Equatable, Sendable {
     /// census available", and every row is treated as live — the ONLY safe
     /// reading, since inferring death from missing evidence would mark every
     /// agent stopped the moment a census failed to arrive.
-    public init(agents: [AgentInfo], livePaneIDs: Set<String>? = nil) {
-        // A worker another agent spawned (`codex exec`) is that agent's business: it gets no
-        // row and counts toward nothing, like herdr's own agent panel.
-        let agents = agents.filter { !$0.isSubagent }
+    public init(agents: [AgentInfo], livePaneIDs: Set<String>? = nil, showSubagents: Bool = false) {
+        // A worker another agent spawned is that agent's business: unless the owner's filter
+        // shows subagents, it gets no row and counts toward nothing, like herdr's agent panel.
+        let agents = showSubagents ? agents : agents.filter { !$0.isSubagent }
         // Archived agents are pulled out first: they never appear in a live status
         // section and never count toward "needs you" / quiet. A released pane is not
         // "live", so they carry isLive = false; their own section renders them.
@@ -485,11 +485,12 @@ public struct AgentRosterSnapshot: Equatable, Sendable {
     public init(
         agents: [AgentInfo] = [],
         accounts: [CredentialAccount] = [],
-        livePaneIDs: Set<String>? = nil
+        livePaneIDs: Set<String>? = nil,
+        showSubagents: Bool = false
     ) {
         self.agents = agents
         self.accounts = accounts
-        self.agentList = AgentList(agents: agents, livePaneIDs: livePaneIDs)
+        self.agentList = AgentList(agents: agents, livePaneIDs: livePaneIDs, showSubagents: showSubagents)
     }
 }
 

@@ -47,6 +47,11 @@ final class WidgetDataTests: XCTestCase {
         XCTAssertEqual(list.rows.map(\.info.paneID), ["w1:p1"])
         XCTAssertEqual(list.activityContent.needsYouCount, 0, "a blocked subagent is its orchestrator's to answer")
         XCTAssertEqual(list.activityContent.workingCount, 1)
+        let shown = AgentList(agents: [
+            try info(#"{"pane_id":"w1:p1","agent":"claude","agent_status":"working"}"#),
+            try info(#"{"pane_id":"w1:p2","agent":"codex","agent_status":"working","subagent":true}"#),
+        ], livePaneIDs: ["w1:p1", "w1:p2"], showSubagents: true)
+        XCTAssertEqual(shown.rows.map(\.info.paneID).sorted(), ["w1:p1", "w1:p2"], "the owner's filter shows subagents")
     }
 
     func testAnIdleAgentWithBackgroundWorkIsRunning() throws {
