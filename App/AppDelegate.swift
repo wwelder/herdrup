@@ -106,7 +106,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
     // A tap on the notification → deep-link. `PushTapTarget` decides: anything carrying
     // `herdr_guest` goes to that share's screens or nowhere, never an owner screen; a gram alert
-    // (`gram: true`, empty `pane_id`) is checked before the pane branch. A question's button
+    // opens the agent that sent it, like any agent alert. A question's button
     // (#483) answers in place instead: no screen opens, and iOS keeps the app alive until this
     // returns, so the answer and its follow-up notification finish first.
     func userNotificationCenter(_ center: UNUserNotificationCenter,
@@ -124,7 +124,6 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     static func routeTap(userInfo: [AnyHashable: Any]) {
         switch PushTapTarget(userInfo: userInfo) {
         case .guest(let route): PushCenter.shared.tappedGuest(route)
-        case .ownerGram: PushCenter.shared.tappedGram()
         case .ownerFeed(let card): PushCenter.shared.pendingFeed = card
         case .ownerPane(let paneID, let session): PushCenter.shared.tapped(paneID: paneID, session: session)
         case .droppedGuest, .none: break

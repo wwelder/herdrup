@@ -1009,58 +1009,6 @@ final class ChatUXSmokeTests: XCTestCase {
         record(again, "Double tap resets the chat column to Wide")
     }
 
-    /// Chat and Gram share one column width (#541): a width chosen in Chat is the width Gram
-    /// shows, and a reset in Gram is Chat's too.
-    func testChatAndGramShareTheColumnWidth() throws {
-        try XCTSkipIf(true, "the owner's Gram tab is hidden for now (HomeTab.allCases)")
-        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .pad, "the column width is resizable on regular width only")
-        XCUIDevice.shared.orientation = .landscapeLeft
-        rotated = true
-        let app = launch()
-        let chat = element(app, "chat-area")
-        let column = element(app, "chat-column")
-        let right = element(app, "chat-width-handle-right")
-        XCTAssertTrue(right.waitForExistence(timeout: 10), app.debugDescription)
-        let available = settle(within: 8, { chat.frame.width }, until: { $0 > 1000 })
-        let wide = min(1000, available)
-        let initial = settle({ column.frame.width }, until: { abs($0 - wide) < 0.5 })
-        XCTAssertEqual(initial, wide, accuracy: 0.5, "the column starts Wide (or Full when narrower)")
-
-        // Narrower by 100 pt (or onto Readable, if that is within reach of the snap).
-        dragRightEdge(app, by: -50)
-        let chosen = settle({ column.frame.width }, until: { $0 < initial - 50 })
-        XCTAssertLessThan(chosen, initial - 50, "the drag narrows the chat column")
-        record(app, "Chat column set to \(Int(chosen)) pt")
-
-        let gramTab = app.buttons["Gram"].firstMatch
-        XCTAssertTrue(gramTab.waitForExistence(timeout: 5), app.debugDescription)
-        gramTab.tap()
-        let gramColumn = element(app, "gram-column")
-        // Gram's own width (its feed's scroll view runs on under the floating sidebar).
-        let gramFeed = element(app, "gram-width-area")
-        XCTAssertTrue(gramColumn.waitForExistence(timeout: 10), app.debugDescription)
-        XCTAssertTrue(gramFeed.waitForExistence(timeout: 5), app.debugDescription)
-        let expected = min(chosen, gramFeed.frame.width)
-        let shown = settle({ gramColumn.frame.width }, until: { abs($0 - expected) < 0.5 })
-        XCTAssertEqual(shown, expected, accuracy: 0.5, "Gram shows the width chosen in Chat")
-        XCTAssertEqual(gramColumn.frame.midX, gramFeed.frame.midX, accuracy: 1, "Gram's column is centred")
-        record(app, "Gram at the width chosen in Chat (\(Int(shown)) pt)")
-
-        // The other way: a reset in Gram is Chat's width too.
-        let gramRight = element(app, "gram-width-handle-right")
-        XCTAssertTrue(gramRight.waitForExistence(timeout: 5), app.debugDescription)
-        gramRight.doubleTap()
-        let gramWide = min(1000, gramFeed.frame.width)
-        let reset = settle({ gramColumn.frame.width }, until: { abs($0 - gramWide) < 0.5 })
-        XCTAssertEqual(reset, gramWide, accuracy: 0.5, "a double tap in Gram resets to Wide")
-        app.buttons["Agents"].firstMatch.tap()
-        XCTAssertTrue(right.waitForExistence(timeout: 5), app.debugDescription)
-        let chatWide = min(1000, chat.frame.width)
-        let back = settle({ column.frame.width }, until: { abs($0 - chatWide) < 0.5 })
-        XCTAssertEqual(back, chatWide, accuracy: 0.5, "the reset in Gram is Chat's width too")
-        record(app, "Chat back at Wide after the reset in Gram")
-    }
-
     /// Set by the width test: puts the iPad back as the other tests expect it, pass or fail.
     private var rotated = false
     private var minimisedSidebar = false

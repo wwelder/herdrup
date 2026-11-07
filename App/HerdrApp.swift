@@ -1804,11 +1804,6 @@ struct TerminalHomeView: View {
     /// per production poll interval, never once per row. `rosterClockNow` is its clock.
     @State private var rosterNow = TerminalHomeView.rosterClockNow()
     private var agents: [AgentInfo] { displayedRoster.agents }
-    /// Every running session's agents, for Gram: its contacts span sessions even while the
-    /// roster shows one.
-    private var gramAgents: [AgentInfo] {
-        showAllSessions ? agents : agents + otherRosters.keys.sorted().flatMap { otherRosters[$0] ?? [] }
-    }
     private var accounts: [CredentialAccount] { displayedRoster.accounts }
     @State private var error: String?
     @State private var loading = true
@@ -1902,21 +1897,9 @@ struct TerminalHomeView: View {
         case rename(AgentFolder)
     }
     @State private var activeCover: ActiveCover?
-    /// The selected bottom tab (Agents / Gram / Settings). Terminal is NOT a tab — it
-    /// fronts a keep-mounted pane OVER the tabs (see PaneKeepAliveContainer). Gram and
-    /// Settings were modal covers before #88; they are persistent tabs now.
-    @State private var selectedTab: HomeTab = TerminalHomeView.initialTab
-    /// The fronted pane was opened from a Gram entry: closing it goes back to Gram, the
-    /// window the owner reads, rather than leaving them on the agents list.
-    @State private var paneOpenedFromGram = false
-
-    /// Gram, the owner's inbox. The mocked UI tests drive the agents list, so they start there.
-    private static var initialTab: HomeTab {
-        #if DEBUG
-        if ScreenshotMock.mode != nil { return .agents }
-        #endif
-        return .gram
-    }
+    /// The selected bottom tab (Agents / Feed / Settings). Terminal is NOT a tab — it
+    /// fronts a keep-mounted pane OVER the tabs (see PaneKeepAliveContainer).
+    @State private var selectedTab: HomeTab = .agents
     /// On iPad (regular width) the app becomes a NavigationSplitView (sidebar + detail);
     /// on iPhone / narrow it stays the tab bar + terminal-over layout. Same views either way.
     @Environment(\.horizontalSizeClass) private var hSizeClass
@@ -2011,31 +1994,6 @@ struct TerminalHomeView: View {
     /// re-renders at the new `Typography.scale` when it changes — WITHOUT the
     /// identity churn `.id()` would cause (which reset the tab / terminal panes).
     @AppStorage("ui.fontScale") private var uiFontScale: Double = 1.0
-    /// Unread agent→owner grams, badged on the Gram tab. Session-scoped; written
-    /// by GramView while visible and by an ambient poll (below) while it isn't.
-    /// Only the badge/sidebar readers observe this object: publishing a count must not
-    /// rebuild the tab host while a message's context menu is handling a touch.
-    @State private var gramUnread = GramUnreadTracker()
-    /// Gram's Inbox/Saved selection, owned HERE rather than inside `GramView` because on regular
-    /// width the selector is rendered in the split view's sidebar — a sibling column of the page
-    /// it drives. Shared by both layouts, so the phone's header toggle and the sidebar rows read
-    /// and write the same value.
-    @State private var gramShowingSaved = false
-    /// One-shot signal for the sidebar's refresh button. A sidebar button cannot call `GramView`'s
-    /// async `load`, so it bumps this and the page's `onChange` performs the reload.
-    @State private var gramRefreshToken = 0
-    /// One-shot signal for the sidebar's Read-all button, same reason as `gramRefreshToken`:
-    /// a sidebar button cannot call `GramView`'s async mark-read pass directly.
-    @State private var gramReadAllToken = 0
-    /// One-shot signal for a tap on Gram while it is already selected (the phone's tab bar, the
-    /// iPad's section bar and rail): the feed goes to its newest message (`GramView.newestToken`).
-    @State private var gramNewestToken = 0
-    /// The Gram search on regular width. The field sits at the top of the sidebar (a sibling
-    /// column of the page it filters), so the text lives here and reaches `GramView` as a
-    /// binding; the phone keeps the page's own search toggle instead.
-    @State private var gramSearch = ""
-    /// Focus of the sidebar's Gram search, so ⌘F can put the cursor in it.
-    @FocusState private var gramSearchFocused: Bool
     /// First launch shows the gestures tutorial once; the "Gestures" tab reopens it.
     @AppStorage("hasSeenGesturesHelp") private var hasSeenGesturesHelp = false
 
@@ -2063,14 +2021,11 @@ struct TerminalHomeView: View {
     /// ONE definition of the sections (#360): the iPhone `TabView`, the iPad/Mac sidebar
     /// bar and the minimised rail all read label and icon from here, so they cannot drift.
     private enum HomeTab: String, Hashable, CaseIterable {
-        /// Gram first: it is the owner's clean inbox (herdr writes every blocked question,
-        /// recap and exit there), and the agents list is the raw view behind it.
-        case gram, agents, feed, settings
+        case agents, feed, settings
 
         var label: String {
             switch self {
             case .agents: return "Agents"
-            case .gram: return "Gram"
             case .feed: return "Feed"
             case .settings: return "Settings"
             }
@@ -2081,7 +2036,6 @@ struct TerminalHomeView: View {
         var icon: String {
             switch self {
             case .agents: return "square.grid.2x2"
-            case .gram: return "bubble.left.and.bubble.right"
             case .feed: return "newspaper"
             case .settings: return "gearshape"
             }
@@ -2200,7 +2154,6 @@ struct TerminalHomeView: View {
         // declared, so a pane opened from a push deep-link while Gram/Settings is showing
         // would otherwise leave the tab bar drawing over it. Selecting Agents keeps every
         // open path (row tap, deep-link, spawn, swipe-paging) consistent.
-        if selectedTab == .gram { paneOpenedFromGram = true }
         selectedTab = .agents
         frontID = slot.id
     }
@@ -2332,12 +2285,12 @@ struct TerminalHomeView: View {
         // would front this session's same-id pane instead.
     }
 
-    /// A tapped gram push selects the Gram tab; a tapped question, the Feed tab at its
-    /// card. Like `applyDeepLink`, it is consumed on the onChange path (app already up)
+    /// A tapped question selects the Feed tab at its card. Like `applyDeepLink`, it is
+    /// consumed on the onChange path (app already up)
     /// AND post-load (a cold-launch tap set the flag before this view existed). Leaving
     /// it armed lets a later trigger re-invoke it.
     private func openPushedTabIfPending() {
-        guard push.pendingGram || push.pendingFeed != nil else { return }
+        guard push.pendingFeed != nil else { return }
         // The fork notice (a fullScreenCover) is up: don't switch under it; its
         // onDismiss re-invokes this once it's gone.
         if showForkNotice { return }
@@ -2350,15 +2303,9 @@ struct TerminalHomeView: View {
         // Drop any fronted terminal so the tab is visible (the pane stays MOUNTED,
         // so reopening it later is instant).
         frontID = nil
-        if push.pendingGram {
-            push.pendingGram = false
-            selectedTab = .gram
-        } else {
-            // An agent's question: the Feed tab, open at its card.
-            FeedStore.shared.opening = push.pendingFeed
-            push.pendingFeed = nil
-            selectedTab = .feed
-        }
+        FeedStore.shared.opening = push.pendingFeed
+        push.pendingFeed = nil
+        selectedTab = .feed
     }
 
     /// Swipe-page from the fronted pane to its prev/next sibling (clamped). `open()`s the
@@ -2435,12 +2382,6 @@ struct TerminalHomeView: View {
                             .padding(.horizontal, 8)
                             .padding(.top, 6)
                         Spacer(minLength: 0)
-                    case .gram:
-                        // Gram's Inbox/Saved selector belongs in THIS column, beside the section
-                        // picker, the same way the agents list does. It used to render an empty
-                        // Spacer() here while GramView drew its own 260pt rail in the detail
-                        // pane, which put two sidebars on screen — one of them blank.
-                        gramSidebar
                     }
                 }
                 // #360: the sections live in the iPhone tab bar's shape at the bottom of the
@@ -2605,7 +2546,7 @@ struct TerminalHomeView: View {
     private var detailColumn: some View {
         ZStack(alignment: .topLeading) {
                 Palette.groundMachine.ignoresSafeArea()
-                // Base layer: the switch renders Gram / Settings and the agents placeholder.
+                // Base layer: the switch renders Feed / Settings and the agents placeholder.
                 // The terminal container is deliberately NOT in here — it is the
                 // always-mounted overlay below.
                 switch selectedTab {
@@ -2613,15 +2554,6 @@ struct TerminalHomeView: View {
                     if frontID == nil {
                         SelectAgentPlaceholder(lines: glyphFieldLines, spotlight: glyphFieldSpotlight)
                     }
-                case .gram:
-                    GramView(client: client, unread: gramUnread,
-                             showingSaved: $gramShowingSaved,
-                             refreshToken: gramRefreshToken,
-                             readAllToken: gramReadAllToken,
-                             searchText: $gramSearch,
-                             newestToken: gramNewestToken,
-                             agents: gramAgents,
-                             connectedSession: connectedSessionName)
                 case .feed:
                     FeedView(client: client)
                 case .settings:
@@ -2654,8 +2586,7 @@ struct TerminalHomeView: View {
         }
     }
 
-    /// Zero-opacity buttons that exist only to register ⌘K / ⌘/ (and ⌘F on Gram) with the
-    /// responder chain.
+    /// Zero-opacity buttons that exist only to register ⌘K / ⌘/ with the responder chain.
     private var keyboardShortcuts: some View {
         ZStack {
             Button("Toggle sidebar") { toggleSidebar() }
@@ -2670,13 +2601,6 @@ struct TerminalHomeView: View {
                 .keyboardShortcut("-", modifiers: .command)
             Button("Reset zoom") { terminalFontSize = 12.5 }
                 .keyboardShortcut("0", modifiers: .command)
-            // ⌘F on Gram puts the cursor in the sidebar search. Registered only while Gram is
-            // the section: the terminal's own ⌘F lives on the front pane, which is not
-            // presented then, so the two bindings never compete.
-            if selectedTab == .gram {
-                Button("Search Gram") { focusGramSearch() }
-                    .keyboardShortcut("f", modifiers: .command)
-            }
         }
         .opacity(0)
         .allowsHitTesting(false)
@@ -2727,163 +2651,6 @@ struct TerminalHomeView: View {
         Spacer(minLength: 0)
     }
 
-    /// Gram's sidebar column, as the design draws it: the shared section bar (Back, the small
-    /// centred title with the amber unread count, and the sidebar toggle / Read all / Refresh
-    /// capsule), a mic-less search field, and the channel's two conversations as Messages rows.
-    ///
-    /// This is the SAME column the agents list uses. Gram previously drew its own rail inside the
-    /// detail pane while this column rendered a blank `Spacer()`, so the reader saw two sidebars
-    /// and the left one was empty. Selecting a row writes `gramShowingSaved` and typing writes
-    /// `gramSearch`; the page reads both as bindings, so the detail pane filters and swaps in
-    /// place with no navigation, and the page shows no search control of its own.
-    private var gramSidebar: some View {
-        GramUnreadContent(unread: gramUnread) { count in
-            VStack(alignment: .leading, spacing: 0) {
-                SectionTopBar(title: "Gram", count: count, leading: {
-                    SectionBackSlot(.leading) { sectionBackButton }
-                }) {
-                    hideSidebarButton
-                    SectionBackSlot(.trailing) { sectionBackButton }
-                    if !gramShowingSaved, count > 0 {
-                        SectionBarButton(icon: "envelope.open", label: "Read all") { gramReadAllToken += 1 }
-                    }
-                    SectionBarButton(icon: "arrow.clockwise", label: "Refresh") { gramRefreshToken += 1 }
-                }
-                sidebarSearchField(text: $gramSearch, focus: $gramSearchFocused,
-                                   identifier: "gram-search-field", height: 40, outlined: true)
-                    .padding(.top, 2)
-                GramSidebarConversations(showingSaved: $gramShowingSaved, unreadCount: count)
-                    .padding(.horizontal, 8)
-                    .padding(.top, 6)
-                Spacer(minLength: 0)
-            }
-            .frame(maxHeight: .infinity, alignment: .top)
-        }
-    }
-
-    /// ⌘F on Gram: the cursor goes to the sidebar search. A minimised sidebar is opened first;
-    /// the field only mounts with its column, so the focus waits out the column's animation.
-    private func focusGramSearch() {
-        guard columnVisibility == .detailOnly else {
-            gramSearchFocused = true
-            return
-        }
-        toggleSidebar()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { gramSearchFocused = true }
-    }
-
-    /// Gram's two conversations in the sidebar, as Messages rows. "Gram" is the channel: the two
-    /// most recent agent senders' avatars, the newest message as the preview and its time, and
-    /// the amber dot while anything is unread. "Saved" is the local bookmarks: the newest saved
-    /// message and its time. Selecting a row writes `showingSaved`, which the page reads.
-    ///
-    /// Its own view, observing the two stores itself, so a poll or a bookmark re-renders these
-    /// two rows rather than the whole home view.
-    private struct GramSidebarConversations: View {
-        @Binding var showingSaved: Bool
-        let unreadCount: Int
-        @ObservedObject private var inboxStore = GramInboxStore.shared
-        @ObservedObject private var savedStore = SavedGramStore.shared
-
-        var body: some View {
-            let messages = inboxStore.inbox.messages   // newest first
-            let senders = Self.recentAgentSenders(in: messages)
-            let newestSaved = savedStore.saved.first   // newest first
-            VStack(spacing: 2) {
-                conversation(identifier: "gram-conversation-gram", selected: !showingSaved,
-                             select: { showingSaved = false }) {
-                    GramConversationRow(
-                        title: "Gram",
-                        avatarNames: senders,
-                        // No agent has written yet: the channel's own symbol in place of faces.
-                        systemImage: senders.isEmpty ? "bubble.left.and.bubble.right.fill" : nil,
-                        preview: messages.first.map { Self.preview(of: $0) } ?? AttributedString(),
-                        time: messages.first?.createdAt,
-                        unread: unreadCount > 0,
-                        selected: !showingSaved)
-                }
-                conversation(identifier: "gram-conversation-saved", selected: showingSaved,
-                             select: { showingSaved = true }) {
-                    GramConversationRow(
-                        title: "Saved",
-                        avatarNames: [],
-                        systemImage: "bookmark.fill",
-                        preview: newestSaved.map { Self.preview(of: $0) }
-                            ?? AttributedString("No saved messages yet"),
-                        time: newestSaved?.createdAt,
-                        unread: false,
-                        selected: showingSaved)
-                }
-            }
-        }
-
-        /// The row as a plain button carrying the id tests and VoiceOver use, with the
-        /// selected trait on the current conversation.
-        private func conversation<Row: View>(identifier: String, selected: Bool,
-                                             select: @escaping () -> Void,
-                                             @ViewBuilder row: () -> Row) -> some View {
-            Button(action: select, label: row)
-                .buttonStyle(.plain)
-                .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 14))
-                .hoverEffect(.highlight)
-                .accessibilityIdentifier(identifier)
-                .accessibilityAddTraits(selected ? .isSelected : [])
-        }
-
-        /// The two most recent distinct agents that wrote, by bare name, newest first.
-        private static func recentAgentSenders(in messages: [GramMessage]) -> [String] {
-            var names: [String] = []
-            for message in messages where message.isFromAgent {
-                let name = message.senderAgentName
-                if !names.contains(name) { names.append(name) }
-                if names.count == 2 { break }
-            }
-            return names
-        }
-
-        /// "You: **vetrina** great, ship it." for the owner's posts (the addressee in bold;
-        /// a shared-queue post has none), "clientloop: Scaffold is up…" for an agent's.
-        private static func preview(of message: GramMessage) -> AttributedString {
-            let body = summary(message.text, fileName: message.attachmentPreview)
-            guard !message.isFromAgent else {
-                return AttributedString("\(message.senderAgentName): \(body)")
-            }
-            var line = AttributedString("You: ")
-            if let to = message.to {
-                var name = AttributedString(GramMessage.agentName(from: to))
-                name.inlinePresentationIntent = .stronglyEmphasized
-                line += name
-                line += AttributedString(" ")
-            }
-            line += AttributedString(body)
-            return line
-        }
-
-        /// A saved copy keeps the sender as displayed (`hetzner-1/clientloop`); the row shows
-        /// the bare name, like the channel row.
-        private static func preview(of saved: SavedGram) -> AttributedString {
-            let body = summary(saved.text, fileName: saved.attachmentPreview)
-            let sender = saved.fromAgent ? GramMessage.agentName(from: saved.from) : "You"
-            return AttributedString("\(sender): \(body)")
-        }
-
-        /// The message as one line of prose: fences dropped (their code kept), runs of
-        /// whitespace and newlines collapsed. A file with no caption reads as its name (an
-        /// expired one as "<name> (expired)").
-        private static func summary(_ text: String, fileName: String?) -> String {
-            let pieces = GramText.segments(text).map { segment -> String in
-                switch segment {
-                case .text(let prose): return prose
-                case .code(let code, _): return code
-                }
-            }
-            let flat = pieces.joined(separator: " ")
-                .split(whereSeparator: \.isWhitespace)
-                .joined(separator: " ")
-            return flat.isEmpty ? (fileName ?? "") : flat
-        }
-    }
-
     private var hideSidebarButton: some View {
         SectionBarButton(icon: "sidebar.leading", label: "Minimise sidebar",
                          identifier: "terminal-sidebar-toggle", action: toggleSidebar)
@@ -2901,10 +2668,10 @@ struct TerminalHomeView: View {
     /// shows. Earlier systems keep the frosted bar. It follows the sidebar's width but never
     /// grows past `sidebarTabBarMaxWidth`, centred, so a wide sidebar doesn't stretch it.
     private var sidebarTabBar: some View {
-        GramUnreadContent(unread: gramUnread) { count in
+        SectionBadgeContent {
             HStack(spacing: 0) {
                 ForEach(HomeTab.allCases, id: \.self) { tab in
-                    sidebarTabItem(tab, badge: tabBadgeCount(for: tab, gram: count))
+                    sidebarTabItem(tab, badge: tabBadgeCount(for: tab))
                 }
             }
         }
@@ -2920,17 +2687,11 @@ struct TerminalHomeView: View {
     /// About three iPhone tab items wide; the sidebar ranges 250-460 pt.
     private static let sidebarTabBarMaxWidth: CGFloat = DesignTokens.Size.tabBarMaxWidth
 
-    /// Selects a section. Gram tapped while it is already selected goes to its newest message
-    /// (`gramNewestToken`): the feed is oldest-first, so "back to the start" is its BOTTOM.
     private func select(_ tab: HomeTab) {
-        if tab == .gram, selectedTab == .gram { gramNewestToken += 1 }
         selectedTab = tab
     }
 
-    /// The phone's tab bar selection, through `select`: the TabView sets it again with the
-    /// selected tab when that tab is tapped, which is how a re-tap of Gram is seen. Gram's
-    /// feed opts out of the tab bar's own scroll-to-top (see `WindowedBottomFeed`); Agents
-    /// and Settings keep it.
+    /// The phone's tab bar selection, through `select`.
     private var tabSelection: Binding<HomeTab> {
         Binding(get: { selectedTab }, set: { select($0) })
     }
@@ -3071,9 +2832,9 @@ struct TerminalHomeView: View {
             sidebarToggleButton(
                 icon: "sidebar.left", hint: "Expand sidebar (⌘K)", minimize: false)
                 .padding(.bottom, 2)
-            GramUnreadContent(unread: gramUnread) { count in
+            SectionBadgeContent {
                 ForEach(HomeTab.allCases, id: \.self) { tab in
-                    railSectionButton(tab, badge: tabBadgeCount(for: tab, gram: count))
+                    railSectionButton(tab, badge: tabBadgeCount(for: tab))
                 }
             }
             // Gated on the same condition as the counts below it: a separator with
@@ -3132,11 +2893,10 @@ struct TerminalHomeView: View {
         .accessibilityValue(badgeValue(tab, badge))
     }
 
-    /// The count a section's tab carries: Gram's unread contacts, the feed cards waiting for
-    /// the owner, Settings' herdr update.
-    private func tabBadgeCount(for tab: HomeTab, gram: Int) -> Int {
+    /// The count a section's tab carries: the feed cards waiting for the owner, Settings'
+    /// herdr update.
+    private func tabBadgeCount(for tab: HomeTab) -> Int {
         switch tab {
-        case .gram: return gram
         case .feed: return FeedStore.shared.pendingCount
         case .settings: return settingsBadge
         case .agents: return 0
@@ -3169,18 +2929,12 @@ struct TerminalHomeView: View {
         }
     }
 
-    /// Redraws the section badges when Gram's unread count or the feed's waiting cards change.
-    private struct GramUnreadContent<Content: View>: View {
-        @ObservedObject var unread: GramUnreadTracker
+    /// Redraws the section badges when the feed's waiting cards change.
+    private struct SectionBadgeContent<Content: View>: View {
         @ObservedObject private var feed = FeedStore.shared
-        private let content: (Int) -> Content
+        @ViewBuilder let content: () -> Content
 
-        init(unread: GramUnreadTracker, @ViewBuilder content: @escaping (Int) -> Content) {
-            self.unread = unread
-            self.content = content
-        }
-
-        var body: some View { content(unread.count) }
+        var body: some View { content() }
     }
 
     private struct FeedPendingBadge: ViewModifier {
@@ -3189,14 +2943,6 @@ struct TerminalHomeView: View {
         func body(content: Content) -> some View {
             let count = feed.pendingCount
             content.badge(count == 0 ? nil : Text("\(count)"))
-        }
-    }
-
-    private struct GramUnreadBadge: ViewModifier {
-        @ObservedObject var unread: GramUnreadTracker
-
-        func body(content: Content) -> some View {
-            content.badge(unread.count == 0 ? nil : Text("\(unread.count)"))
         }
     }
 
@@ -3213,17 +2959,6 @@ struct TerminalHomeView: View {
             // standard bar below that) replaces the old hand-built pill (#88). Terminal
             // is NOT a tab — it fronts a keep-mounted pane over everything (below).
             TabView(selection: tabSelection) {
-                // Gram and Settings were modal covers; they are persistent tabs now.
-                // Both are nav-agnostic and take no onClose as tabs (no close button).
-                GramView(client: client, unread: gramUnread,
-                         showingSaved: $gramShowingSaved,
-                         newestToken: gramNewestToken,
-                         agents: gramAgents,
-                         connectedSession: connectedSessionName)
-                    .tag(HomeTab.gram)
-                    .tabItem { Label(HomeTab.gram.label, systemImage: HomeTab.gram.icon) }
-                    .modifier(GramUnreadBadge(unread: gramUnread))
-
                 agentsTab
                     .tag(HomeTab.agents)
                     .tabItem { Label(HomeTab.agents.label, systemImage: HomeTab.agents.icon) }
@@ -3366,23 +3101,6 @@ struct TerminalHomeView: View {
             guard liveEventsSupported, scenePhase != .background else { return }
             await runLiveEvents()
         }
-        // Ambient unread-gram poll for the tab badge, running ONLY while the Gram
-        // tab is not showing — GramView keeps its own 6s poll while visible and
-        // writes the count on load / mark-read. Keyed on selectedTab so it
-        // restarts on tab change and idles on Gram: exactly one poller is live.
-        .task(id: selectedTab) {
-            guard selectedTab != .gram else { return }
-            while !Task.isCancelled {
-                // Unconditional on purpose: `unread_only` is a small answer already,
-                // and this poller keeps no list to compare a digest against.
-                // ponytail: counts contacts in the answer, so a daemon that pages unread-only
-                // answers can undercount past one page of unread grams.
-                if let answer = try? await client.gramList(unreadOnly: true) {
-                    gramUnread.count = GramContactIndex.unreadContactCount(in: answer.messages ?? [])
-                }
-                try? await Task.sleep(nanoseconds: 15_000_000_000)
-            }
-        }
         // The Feed tab's badge counts the cards waiting for the owner, so the feed is fetched
         // on every tab, not only while the Feed page is open.
         // ponytail: a minute's poll; herdr pushing new questions would make it immediate.
@@ -3424,7 +3142,6 @@ struct TerminalHomeView: View {
             if shouldShowFirstRunGesturesHelp,
                 !hasSeenGesturesHelp,
                 activeCover == nil,
-                !push.pendingGram,
                 push.pendingFeed == nil,
                 push.pendingPaneID == nil
             {
@@ -3436,12 +3153,6 @@ struct TerminalHomeView: View {
         // selected tab (open() selects Agents); the cold-launch / just-loaded case is
         // handled at the end of load().
         .onChange(of: push.pendingPaneID) { _, newValue in if newValue != nil { applyDeepLink() } }
-        .onChange(of: frontID) { _, id in
-            guard id == nil, paneOpenedFromGram else { return }
-            paneOpenedFromGram = false
-            selectedTab = .gram
-        }
-        .onChange(of: push.pendingGram) { _, newValue in if newValue { openPushedTabIfPending() } }
         .onChange(of: push.pendingFeed) { _, newValue in if newValue != nil { openPushedTabIfPending() } }
         // ONE item-based sheet, not two stacked isPresented presentations (stacked
         // presentation modifiers on a single view are historically fragile). A SHEET
@@ -5165,10 +4876,6 @@ struct TerminalHomeView: View {
             // yank the reader into a stale pane (an agent that may have finished long ago). If it was
             // already opened by the onChange path, this is nil already. They can reopen from the list.
             push.pendingPaneID = nil
-            // Same for a pending gram tap: a message does not go stale like a pane,
-            // but popping the Gram cover on some much-later successful load is a
-            // surprise; drop it for the same reason and consistency.
-            push.pendingGram = false
         }
     }
 
@@ -5965,10 +5672,10 @@ struct TerminalPaneContent: View {
     }
 
     private var group: AgentGroup? { agent.map { AgentRow(info: $0).group } }
-    /// The page offers the Chat view: an omp agent whose machine serves `agent.transcript`,
+    /// The page offers the Chat view: an omp, Claude Code or Codex agent whose machine serves `agent.transcript`,
     /// until the server says it cannot give this agent a transcript.
     private var chatAvailable: Bool {
-        transcriptCapable && ChatPreference.isOmp(agent?.agent) && !chatModel.unsupported
+        transcriptCapable && ChatPreference.hasChat(agent?.agent) && !chatModel.unsupported
     }
     private var showingChat: Bool { chatAvailable && showsChat }
 
@@ -6053,7 +5760,8 @@ struct TerminalPaneContent: View {
         #endif
         // contains("claude") to stay consistent with DesignSystem's agent-kind colour/glyph mapping,
         // so a claude-family kind is classified uniformly everywhere.
-        return (agent?.agent?.contains("claude") ?? false) && !tuiClassicPrompted
+        // It is about terminal scrolling: the Chat view has nothing to offer it for.
+        return (agent?.agent?.contains("claude") ?? false) && !tuiClassicPrompted && !showingChat
     }
 
     /// The UI text-size setting. Read in `body` only to observe it, so the pane
@@ -8078,7 +7786,7 @@ struct SettingsView: View {
     /// iPad/Mac "Text & typing": the same controls the iPhone index shows inline, given
     /// their own split-view detail so the settings are reachable on regular-width layouts.
     private func appearanceDetail(showBack: Bool) -> some View {
-        detailScaffold(title: "Text & typing", subtitle: "Text size, instant typing and omp chat", showBack: showBack) {
+        detailScaffold(title: "Text & typing", subtitle: "Text size, instant typing and agent chat", showBack: showBack) {
             appearanceControls
             typingSection
             chatSection
@@ -9323,16 +9031,16 @@ struct SettingsView: View {
         }
     }
 
-    /// "omp agents open in": Chat (default) or Terminal (#481). The page's switch overrides
+    /// "Agents open in": Chat (default) or Terminal (#481). The page's switch overrides
     /// it per agent for the session.
     private var chatSection: some View {
         VStack(alignment: .leading, spacing: 0) {
-            sectionLabel("OMP CHAT")
+            sectionLabel("CHAT")
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 12) {
-                    Text("omp agents open in").font(Typography.app(17)).foregroundStyle(Palette.text)
+                    Text("Agents open in").font(Typography.app(17)).foregroundStyle(Palette.text)
                     Spacer(minLength: 8)
-                    Picker("omp agents open in", selection: $ompOpensIn) {
+                    Picker("Agents open in", selection: $ompOpensIn) {
                         Text("Chat").tag(ChatPreference.chat)
                         Text("Terminal").tag(ChatPreference.terminal)
                     }
@@ -9344,7 +9052,7 @@ struct SettingsView: View {
                 .padding(.horizontal, 18).padding(.vertical, 8)
                 .frame(minHeight: 52)
                 rowDivider
-                Text("Chat shows omp's replies, thinking and steps as a conversation. Claude Code and Codex agents always open in the terminal.")
+                Text("Chat shows an agent's replies, thinking and steps as a conversation, and sends your messages straight into its session. Switch to Terminal on the agent's page for the raw session.")
                     .font(Typography.app(12)).foregroundStyle(Palette.textFaint)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 18).padding(.vertical, 12)

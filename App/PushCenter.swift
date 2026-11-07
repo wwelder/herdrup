@@ -26,12 +26,8 @@ final class PushCenter: ObservableObject {
     /// its agent list has loaded, then clears it. Held here so a cold-launch tap (app was closed)
     /// and a tap during a reconnect both survive until the view can act on it.
     @Published var pendingPaneID: String?
-    /// Set when the user taps a gram push (the payload carries `gram: true`, no pane). The home view
-    /// opens the Gram page then clears it. Held here so a cold-launch tap (app was closed) survives
-    /// until the view can act, exactly like `pendingPaneID`.
-    @Published var pendingGram: Bool = false
     /// A tapped agent question (`feed` in the payload, `<source>/<id>`): the home view opens
-    /// the Feed tab and hands the card to `FeedStore.opening`. Held like `pendingGram`.
+    /// the Feed tab and hands the card to `FeedStore.opening`. Held like `pendingPaneID`.
     @Published var pendingFeed: String?
     /// A tapped push for an agent someone shared with this phone (`herdr_guest` in the payload).
     /// The root view opens that share and its home opens the Gram tab or the terminal, then
@@ -64,11 +60,6 @@ final class PushCenter: ObservableObject {
     func tapped(paneID: String, session: String? = nil) {
         pendingPaneSession = session
         pendingPaneID = paneID
-    }
-
-    /// A gram push was tapped — open the Gram page when the view is ready.
-    func tappedGram() {
-        pendingGram = true
     }
 
     /// A push for a shared agent was tapped — open that share when the view is ready.

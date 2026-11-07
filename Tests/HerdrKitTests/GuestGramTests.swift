@@ -397,7 +397,10 @@ final class GuestGramTests: XCTestCase {
                        .guest(GuestPushRoute(hostID: "HOST", guestID: nil, kind: .status)),
                        "the owner's keys on a guest push are ignored")
 
-        XCTAssertEqual(PushTapTarget(userInfo: ["gram": true, "pane_id": ""]), .ownerGram)
+        XCTAssertEqual(PushTapTarget(userInfo: ["gram": true, "pane_id": ""]), PushTapTarget.none,
+                       "a relayed gram opens nothing")
+        XCTAssertEqual(PushTapTarget(userInfo: ["gram": true, "pane_id": "w2:p1", "session": "top-r"]),
+                       .ownerPane("w2:p1", session: "top-r"), "a gram opens the agent that sent it")
         XCTAssertEqual(PushTapTarget(userInfo: ["feed": "agents/ask-1", "pane_id": ""]), .ownerFeed("agents/ask-1"))
         XCTAssertEqual(PushTapTarget(userInfo: ["pane_id": "w1:p1"]), .ownerPane("w1:p1"))
         XCTAssertEqual(PushTapTarget(userInfo: ["pane_id": "w1:p1", "session": "bot-r"]),

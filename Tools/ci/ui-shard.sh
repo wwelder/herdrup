@@ -11,13 +11,12 @@
 #   ipad             iPad-specific rounds, then the SwiftTerm UIKit API tests on iPad
 #   settings-build   optimized simulator build; CI caches its products before testing
 #   settings-gram    iPad Settings resize/resume regression using that Distribution build
-#                    with the device-sized stack (herdrup#416), even on cache hits; then
-#                    GramTests on the iPhone with the Debug build
+#                    with the device-sized stack (herdrup#416), even on cache hits
 #   focused          ONLY_SUITE on ONLY_DEVICE (manual dispatch)
 #
 # The iPhone rounds are complementary BY CONSTRUCTION: iphone-terminal runs exactly
-# TERMINAL_CLASSES plus ChatViewTests and PagingTests and settings-gram runs GramTests,
-# while iphone-app skips those same identifiers, so a new test class lands in iphone-app
+# TERMINAL_CLASSES plus ChatViewTests and PagingTests, while iphone-app skips those same
+# identifiers, so a new test class lands in iphone-app
 # without anyone listing it. A misspelled or renamed entry would silently drop that class, so
 # iphone-terminal fails unless its result bundles show every listed class executed tests.
 set -uo pipefail
@@ -333,7 +332,7 @@ case "$shard" in
     run_suite iPhoneAgentList "$IPHONE_UDID" 10m -only-testing:HerdrUITests/AgentFoldersTests \
       -only-testing:HerdrUITests/NeedsYouPillTests || failed=1
     check_classes_ran TestReceipts/iPhoneAgentList-first.xcresult AgentFoldersTests NeedsYouPillTests || failed=1
-    skip=(-skip-testing:HerdrUITests/GramTests -skip-testing:HerdrUITests/StatusMotionTests
+    skip=(-skip-testing:HerdrUITests/StatusMotionTests
       -skip-testing:HerdrUITests/ChatViewTests -skip-testing:HerdrUITests/ChatUXSmokeTests -skip-testing:HerdrUITests/PagingTests
       -skip-testing:HerdrUITests/AgentFoldersTests -skip-testing:HerdrUITests/NeedsYouPillTests
       -skip-testing:HerdrUITests/DesktopReferenceShots)
@@ -371,10 +370,6 @@ case "$shard" in
     # 848 s of tests, past the old 15m once xcodebuild's own start-up was added.
     run_suite iPadChatUX "$IPAD_UDID" 20m -only-testing:HerdrUITests/ChatUXSmokeTests || failed=1
     check_classes_ran TestReceipts/iPadChatUX-first.xcresult ChatUXSmokeTests || failed=1
-    # Gram's column width (#541): handles, drag, snap, reset and relaunch on the iPad. The
-    # iPhone half (no handles) runs in the iPhone app round.
-    run_suite iPadGramColumn "$IPAD_UDID" 10m -only-testing:HerdrUITests/GramColumnTests || failed=1
-    check_classes_ran TestReceipts/iPadGramColumn-first.xcresult GramColumnTests || failed=1
     # Herdrup Desktop's 13-inch references, before AgentListChrome leaves a window behind.
     desktop_reference_round iPadDesktopReference "$IPAD_UDID" || failed=1
     # Last of the app rounds: AgentListChromeTests shrinks the app into a window on purpose,
@@ -441,13 +436,6 @@ case "$shard" in
         fi
       fi
     fi
-    # Then GramTests on the iPhone with the Debug build. The iPad is shut down first: the
-    # hosted runner has 7 GB, and a second booted simulator adds to the memory pressure
-    # measured during launch stalls (herdrup#418). Budget: run 39608758941 (39 GramTests,
-    # ~17% slower runner) spent 21.7 min in 36 finished cases and hit the old 25m with
-    # two cases left; 35m leaves room for the suite to grow.
-    xcrun simctl shutdown "$IPAD_UDID" >/dev/null 2>&1 || true
-    run_suite iPhoneGram "$IPHONE_UDID" 35m -only-testing:HerdrUITests/GramTests || failed=1
     ;;
   focused)
     case "${ONLY_DEVICE:-iphone}" in
