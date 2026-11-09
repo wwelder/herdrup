@@ -62,6 +62,19 @@ public struct HostEndpoint: Equatable, Sendable {
         Self.isCarrierGradeNAT(host) || Self.isMagicDNSName(host)
     }
 
+    /// The string to hand the socket layer for `host`. An IPv4 literal is written as
+    /// its IPv4-mapped IPv6 form, which is still an IPv4 connection on the wire.
+    ///
+    /// NIO gives even a numeric host to `getaddrinfo`, and on an IPv6-only carrier
+    /// with NAT64 Apple's `getaddrinfo` can answer an IPv4 literal with a synthesized
+    /// IPv6 address, which leaves on cellular instead of entering the Tailscale
+    /// tunnel. Seen on T-Mobile: with the tunnel up, no packet from the app reached
+    /// the host, while Wi-Fi connected fine. A paired host is always a tailnet IPv4.
+    public static func dialHost(for host: String) -> String {
+        var address = in_addr()
+        return inet_pton(AF_INET, host, &address) == 1 ? "::ffff:\(host)" : host
+    }
+
     /// Tailscale hands out `100.64.0.0/10`. A /10, NOT a /8: `100.63.x.x` and
     /// `100.128.x.x` are ordinary public addresses and must not be swept up, or a
     /// real host on the public internet would stop retrying after three failures.

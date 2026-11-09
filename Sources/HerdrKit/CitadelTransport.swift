@@ -854,9 +854,10 @@ actor SSHConnectionCore {
         let port = Int(credentials.port)
         let validator = hostKeyValidator
         let budget = connectTimeoutNanoseconds
+        let dialHost = HostEndpoint.dialHost(for: host)
         let work = Task<SSHClient, Error> {
             try await SSHClient.connect(
-                host: host,
+                host: dialHost,
                 port: port,
                 authenticationMethod: method,
                 hostKeyValidator: validator,

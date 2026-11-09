@@ -126,4 +126,13 @@ final class HostEndpointTests: XCTestCase {
         XCTAssertEqual(HostEndpoint.parse("h:65535")?.port, 65535)
         XCTAssertNil(HostEndpoint.parse("h:65536"))
     }
+
+    /// A numeric IPv4 must not reach getaddrinfo in a form NAT64 can rewrite; anything
+    /// else (names, IPv6, a host that only looks numeric) passes through untouched.
+    func testOnlyAnIPv4LiteralIsDialedInMappedForm() {
+        XCTAssertEqual(HostEndpoint.dialHost(for: "100.94.170.15"), "::ffff:100.94.170.15")
+        XCTAssertEqual(HostEndpoint.dialHost(for: "r2.taile281ed.ts.net"), "r2.taile281ed.ts.net")
+        XCTAssertEqual(HostEndpoint.dialHost(for: "fd7a:115c:a1e0::9d01:aa2c"), "fd7a:115c:a1e0::9d01:aa2c")
+        XCTAssertEqual(HostEndpoint.dialHost(for: "100.64.0.0.evil.com"), "100.64.0.0.evil.com")
+    }
 }
