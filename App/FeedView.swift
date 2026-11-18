@@ -1,11 +1,18 @@
 import HerdrKit
 import SwiftUI
 
-/// The feed's state, shared by the tab and the iPad sidebar: what every saved machine serves,
-/// merged into one timeline, and the owner's read and starred marks, which stay on the phone.
-/// The feed belongs to no machine: it is the same whichever one is open in Agents, and an
-/// answer goes back to the machine that serves the card. A singleton like `PushCenter`, so it
-/// outlives the home view's per-session remount.
+/// Which saved machine holds the feed. Agents on every machine push their cards to that one
+/// machine, and the Feed tab reads it whichever machine is open in Agents.
+enum FeedPreference {
+    /// `SavedHost.id.uuidString`; "" (or a machine no longer saved) reads every saved machine.
+    static let machineKey = "feed.machine"
+}
+
+/// The feed's state, shared by the tab and the iPad sidebar: what the feed's machine serves
+/// (`FeedPreference`; every saved machine merged into one timeline until one is picked), and
+/// the owner's read and starred marks, which stay on the phone. The feed does not follow the
+/// machine open in Agents, and an answer goes back to the machine that serves the card. A
+/// singleton like `PushCenter`, so it outlives the home view's per-session remount.
 @MainActor
 final class FeedStore: ObservableObject {
     static let shared = FeedStore()
@@ -135,15 +142,17 @@ final class FeedStore: ObservableObject {
         return SavedHostsStore.shared.hosts.first { $0.id.uuidString == id }?.label
     }
 
-    /// Reads every saved machine's feed at once. Each machine's cards land as it answers, so a
-    /// machine that is asleep delays only itself.
-    // ponytail: every saved machine is dialled on every load, a minute apart, reachable or not
-    // (a dead one costs its 15 s connect budget). Back off the unreachable ones if it shows.
+    /// Reads the feed's machine, or every saved machine at once when none is picked. Each
+    /// machine's cards land as it answers, so a machine that is asleep delays only itself.
+    // ponytail: with no machine picked, every saved machine is dialled on every load, a minute
+    // apart, reachable or not (a dead one costs its 15 s connect budget).
     func load() async {
         guard !loading else { return }
         loading = true
         defer { loading = false; loaded = true }
-        let hosts = SavedHostsStore.shared.hosts
+        let saved = SavedHostsStore.shared.hosts
+        let picked = UserDefaults.standard.string(forKey: FeedPreference.machineKey) ?? ""
+        let hosts = saved.contains { $0.id.uuidString == picked } ? saved.filter { $0.id.uuidString == picked } : saved
         let known = Set(hosts.map(\.id.uuidString))
         machines = machines.filter { known.contains($0.key) }
         await withTaskGroup(of: Void.self) { group in

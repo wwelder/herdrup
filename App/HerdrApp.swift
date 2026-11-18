@@ -7811,6 +7811,7 @@ struct SettingsView: View {
                                     typingSection
                                     chatSection
                                     gramSection
+                                    feedSection
                                 }
                                 previewsSection
                                 troubleSection
@@ -7869,6 +7870,7 @@ struct SettingsView: View {
             typingSection
             chatSection
             gramSection
+            feedSection
         }
     }
 
@@ -9063,6 +9065,7 @@ struct SettingsView: View {
     @AppStorage(ChatPreference.key) private var ompOpensIn = ChatPreference.defaultValue
     @AppStorage(OrchestratorPreference.machineKey) private var gramMachine = ""
     @AppStorage(OrchestratorPreference.agentKey) private var gramAgent = OrchestratorPreference.defaultAgent
+    @AppStorage(FeedPreference.machineKey) private var feedMachine = ""
 
     /// The terminal font size (points), the same app-wide pref the per-agent ⋯ menu
     /// and ⌘± drive. Writing it here live-updates any open terminal (LiveTerminalView
@@ -9156,6 +9159,39 @@ struct SettingsView: View {
             .settingsGroup()
             .padding(.horizontal, 16).padding(.top, 10)
         }
+    }
+
+    /// "Feed": the one machine that holds the feed, or every machine.
+    private var feedSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            sectionLabel("FEED")
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 12) {
+                    Text("Feed reads").font(Typography.app(17)).foregroundStyle(Palette.text)
+                    Spacer(minLength: 8)
+                    Picker("Feed reads", selection: $feedMachine) {
+                        Text("All machines").tag("")
+                        ForEach(SavedHostsStore.shared.hosts) { host in
+                            Text(verbatim: host.label).tag(host.id.uuidString)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .tint(Palette.textDim)
+                    .accessibilityIdentifier("settings-feed-machine")
+                }
+                .padding(.horizontal, 18).padding(.vertical, 8)
+                .frame(minHeight: 52)
+                rowDivider
+                Text("Pick the machine that holds your feed: agents on every machine push their cards there and read your answers there. The Feed tab then reads only that machine, whichever one is open in Agents.")
+                    .font(Typography.app(12)).foregroundStyle(Palette.textFaint)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 18).padding(.vertical, 12)
+            }
+            .settingsGroup()
+            .padding(.horizontal, 16).padding(.top, 10)
+        }
+        .onChange(of: feedMachine) { _, _ in Task { await FeedStore.shared.load() } }
     }
 
     /// "Agents open in": Chat (default) or Terminal (#481). The page's switch overrides

@@ -53,10 +53,12 @@ herdr's JSON API exposes both, so panes and agents become real UI objects instea
   switch) on a connection of its own, so it is the same whichever machine is open in Agents.
   Settings → Gram picks the machine it runs on and its agent name (default `orchestrator`).
 - **Feed** — cards scripts and agents write on your machines (`~/.config/herdr/feeds/<source>/<id>.json`):
-  something to read, or a question with buttons. The Feed reads every saved machine into one
-  timeline, names the machine on each card, and sends an answer to the machine that owns the card.
-  A machine that cannot be reached keeps its last cards and is named at the end of the timeline.
-  Only Agents is per machine.
+  something to read, or a question with buttons. The feed lives on one machine: agents on every
+  machine push their cards there, and Settings → Feed picks it. The Feed tab then reads only that
+  machine, whichever one is open in Agents. Until one is picked it reads every saved machine into
+  one timeline, names the machine on each card, and sends an answer to the machine that owns the
+  card; a machine that cannot be reached keeps its last cards and is named at the end of the
+  timeline. Only Agents is per machine.
 - **omp Chat view** — an omp agent's page opens as a conversation read from its session file:
   your prompts as bubbles, its replies in rendered markdown, its thinking and tool steps folded
   into one expandable line, notes, the current checklist and questions you answer with a tap
