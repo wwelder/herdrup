@@ -79,18 +79,7 @@ enum AskPushAnswer {
     }
 
     private static func savedCredentials(_ saved: SavedHost) -> SSHCredentials? {
-        guard let endpoint = HostEndpoint.parse(saved.host) else { return nil }
-        switch saved.auth {
-        case .key:
-            guard let key = SavedHostsStore.shared.key(for: saved)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !key.isEmpty else { return nil }
-            return SSHCredentials(host: endpoint.host, port: endpoint.port, username: saved.username,
-                                  privateKeyPEM: key, remoteSocketPath: "")
-        case .password:
-            guard let password = SavedHostsStore.shared.password(for: saved), !password.isEmpty else { return nil }
-            return SSHCredentials(host: endpoint.host, port: endpoint.port, username: saved.username,
-                                  password: password, remoteSocketPath: "")
-        }
+        SavedHostsStore.shared.credentials(for: saved)
     }
 
     private static func loadRoutes() -> AskAnswerRoutes {

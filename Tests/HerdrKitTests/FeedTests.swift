@@ -44,6 +44,20 @@ final class FeedTests: XCTestCase {
         XCTAssertNil(card.replySummary)
     }
 
+    func testACardFromOneOfSeveralMachinesIsNamedByItsMachine() throws {
+        let file = FeedCardFile(source: "agents", id: "ask-1", card: #"{"title":"Ship it?"}"#)
+        let a = try FeedCards.entry(file, machine: "A")
+        let b = try FeedCards.entry(file, machine: "B")
+        XCTAssertEqual(a.id, "A|agents/ask-1")
+        XCTAssertNotEqual(a.id, b.id)
+        XCTAssertEqual(a.machine, "A")
+        XCTAssertEqual(a.legacyID, "agents/ask-1")
+        XCTAssertEqual(try FeedCards.entry(file).id, "agents/ask-1")
+        // A card starred before cards had a machine still decodes.
+        let old = #"{"id":"agents/ask-1","source":"agents","cardID":"ask-1","title":"t","body":"","actions":[]}"#
+        XCTAssertNil(try JSONDecoder().decode(FeedEntry.self, from: Data(old.utf8)).machine)
+    }
+
     func testSomethingElseIsNotACard() {
         XCTAssertThrowsError(try FeedCards.entry(FeedCardFile(source: "a", id: "b", card: "[1]")))
         XCTAssertThrowsError(try FeedCards.entry(FeedCardFile(source: "a", id: "b", card: nil, error: "too big")))

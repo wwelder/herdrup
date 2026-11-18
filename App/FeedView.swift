@@ -1,16 +1,18 @@
 import HerdrKit
 import SwiftUI
 
-/// The feed's state, shared by the tab and the iPad sidebar: what the machine serves, and the
-/// owner's read and starred marks, which stay on the phone. A singleton like `PushCenter`, so
-/// it outlives the home view's per-session remount.
+/// The feed's state, shared by the tab and the iPad sidebar: what every saved machine serves,
+/// merged into one timeline, and the owner's read and starred marks, which stay on the phone.
+/// The feed belongs to no machine: it is the same whichever one is open in Agents, and an
+/// answer goes back to the machine that serves the card. A singleton like `PushCenter`, so it
+/// outlives the home view's per-session remount.
 @MainActor
 final class FeedStore: ObservableObject {
     static let shared = FeedStore()
 
     enum Filter: Hashable { case all, starred, feed(String) }
 
-    /// One source folder on the machine.
+    /// One source folder, on any machine.
     struct Source: Identifiable, Hashable {
         let id: String
         var title: String { id }
@@ -52,6 +54,17 @@ final class FeedStore: ObservableObject {
     // ponytail: the newest 3000 read marks; older ones fall off and would show unread again.
     private static let readCap = 3000
     private var readOrder: [String]
+    /// What one machine served last. A machine that cannot be reached keeps its cards on
+    /// screen and says why in `unreadable`.
+    private struct Served {
+        var entries: [FeedEntry] = []
+        var sources: Set<String> = []
+        var unreadable: [String] = []
+        /// Nil once the machine has served its feed; before that, why it has not.
+        var problem: Problem?
+        var served = false
+    }
+    private var machines: [String: Served] = [:]
     /// Bumped by an answer, so a list fetched before it can't put the card back as unanswered.
     private var generation = 0
 
@@ -108,18 +121,48 @@ final class FeedStore: ObservableObject {
         }
     }
 
+    /// The card named `id`. A question push, and a mark from before cards had a machine, name
+    /// it `source/id`: that finds the card of that name on whichever machine serves it.
     func entry(id: String) -> FeedEntry? {
         entries.first { $0.id == id } ?? starred.first { $0.id == id }
+            ?? entries.first { $0.legacyID == id }
     }
 
-    func load(_ client: HerdrClient) async {
+    /// The saved machine's name, for a card's source line. Nil while one machine serves the
+    /// whole feed, where the name would say nothing.
+    func machineLabel(_ entry: FeedEntry) -> String? {
+        guard machines.values.filter({ $0.served }).count > 1, let id = entry.machine else { return nil }
+        return SavedHostsStore.shared.hosts.first { $0.id.uuidString == id }?.label
+    }
+
+    /// Reads every saved machine's feed at once. Each machine's cards land as it answers, so a
+    /// machine that is asleep delays only itself.
+    // ponytail: every saved machine is dialled on every load, a minute apart, reachable or not
+    // (a dead one costs its 15 s connect budget). Back off the unreachable ones if it shows.
+    func load() async {
         guard !loading else { return }
         loading = true
         defer { loading = false; loaded = true }
+        let hosts = SavedHostsStore.shared.hosts
+        let known = Set(hosts.map(\.id.uuidString))
+        machines = machines.filter { known.contains($0.key) }
+        await withTaskGroup(of: Void.self) { group in
+            for host in hosts {
+                group.addTask { await self.load(host) }
+            }
+        }
+        merge()
+    }
+
+    private func load(_ host: SavedHost) async {
+        let machine = host.id.uuidString
+        // A machine saved without its secret on this phone has no feed to read here.
+        guard let client = FleetClients.shared.client(for: host) else { return }
         let started = generation
         do {
             guard let files = try await client.feedList() else {
-                entries = []; sources = []; unreadable = []; problem = .unsupported
+                machines[machine] = Served(problem: .unsupported)
+                merge()
                 return
             }
             guard generation == started else { return }
@@ -127,36 +170,84 @@ final class FeedStore: ObservableObject {
             var broken: [String] = []
             for file in files {
                 do {
-                    cards.append(try FeedCards.entry(file))
+                    cards.append(try FeedCards.entry(file, machine: machine))
                 } catch {
-                    broken.append("\(file.source)/\(file.id): \(file.error ?? "not a JSON card")")
+                    broken.append("\(host.label): \(file.source)/\(file.id): \(file.error ?? "not a JSON card")")
                 }
             }
-            entries = FeedCards.newestFirst(cards)
-            sources = Set(files.map(\.source)).sorted().map { Source(id: $0) }
-            unreadable = broken
-            problem = nil
+            machines[machine] = Served(entries: cards, sources: Set(files.map(\.source)), unreadable: broken, served: true)
             for card in cards where card.outcome != nil { outputs[card.id] = nil }
-            if case .feed(let source) = filter, !sources.contains(where: { $0.id == source }) { filter = .all }
         } catch {
-            problem = .failed(error.localizedDescription)
+            var kept = machines[machine] ?? Served()
+            kept.problem = .failed(error.localizedDescription)
+            kept.unreadable = ["\(host.label): couldn't be reached (\(error.localizedDescription))"]
+            machines[machine] = kept
         }
+        merge()
+    }
+
+    /// One timeline out of what the machines served.
+    private func merge() {
+        let all = machines.values
+        entries = FeedCards.newestFirst(all.flatMap(\.entries))
+        sources = Set(all.flatMap(\.sources)).sorted().map { Source(id: $0) }
+        unreadable = all.flatMap(\.unreadable).sorted()
+        // The feed as a whole has a problem only when no machine served one: an old herdr on
+        // every machine, or none reachable.
+        if all.contains(where: { $0.served }) || all.isEmpty {
+            problem = nil
+        } else if all.allSatisfy({ $0.problem == .unsupported }) {
+            problem = .unsupported
+        } else {
+            problem = all.compactMap { served -> Problem? in
+                if case .failed = served.problem { return served.problem }
+                return nil
+            }.first
+        }
+        if !all.isEmpty { loaded = true }
+        adoptLegacyMarks()
+        if case .feed(let source) = filter, loaded, !sources.contains(where: { $0.id == source }) { filter = .all }
+    }
+
+    /// Read and starred marks made when the feed came from one machine name a card
+    /// `source/id`. They carry over to the card of that name on whichever machine serves it.
+    private func adoptLegacyMarks() {
+        var adopted = false
+        for entry in entries where entry.machine != nil && !readIDs.contains(entry.id) && readIDs.contains(entry.legacyID) {
+            readIDs.insert(entry.id)
+            readOrder.append(entry.id)
+            adopted = true
+        }
+        if adopted { UserDefaults.standard.set(readOrder, forKey: "feed.read") }
+        var restarred = false
+        for (index, star) in starred.enumerated() where star.machine == nil {
+            if let now = entries.first(where: { $0.legacyID == star.id }) {
+                starred[index] = now
+                restarred = true
+            }
+        }
+        if restarred { UserDefaults.standard.set(try? JSONEncoder().encode(starred), forKey: "feed.starred") }
     }
 
     /// The owner picked `action` (or sent `text`) on `entry`: asks the card's `confirm`
     /// question first, if it has one.
-    func choose(_ entry: FeedEntry, _ action: FeedAction?, text: String?, client: HerdrClient) {
+    func choose(_ entry: FeedEntry, _ action: FeedAction?, text: String?) {
         let choice = Choice(entry: entry, action: action, text: text)
         if entry.confirm != nil {
             confirming = choice
         } else {
-            Task { await send(choice, client: client) }
+            Task { await send(choice) }
         }
     }
 
-    func send(_ choice: Choice, client: HerdrClient) async {
+    /// Sends the answer to the machine that serves the card.
+    func send(_ choice: Choice) async {
         let entry = choice.entry
         guard !sending.contains(entry.id) else { return }
+        guard let client = FleetClients.shared.client(forMachine: entry.machine) else {
+            failure = "The machine this card came from is no longer saved on this phone."
+            return
+        }
         sending.insert(entry.id)
         defer { sending.remove(entry.id) }
         do {
@@ -173,7 +264,7 @@ final class FeedStore: ObservableObject {
         } catch {
             failure = error.localizedDescription
         }
-        await load(client)
+        await load()
     }
 
     func isRead(_ entry: FeedEntry) -> Bool { readIDs.contains(entry.id) }
@@ -212,7 +303,6 @@ final class FeedStore: ObservableObject {
 /// by day. A dot marks what is unread; swipe right to toggle read, left to star. The title is
 /// the timeline picker (all, starred, one source).
 struct FeedView: View {
-    let client: HerdrClient
     @ObservedObject private var store = FeedStore.shared
     @State private var path: [String] = []
 
@@ -225,14 +315,15 @@ struct FeedView: View {
             .background(Palette.ground)
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: String.self) { id in
-                FeedReaderView(entryID: id, client: client)
+                FeedReaderView(entryID: id)
             }
         }
         .onChange(of: store.opening, initial: true) { _, card in
             guard let card else { return }
             store.opening = nil
-            path = [card]
-            Task { await store.load(client) }
+            // A push names the card `source/id`; the timeline names it by its machine too.
+            path = [store.entry(id: card)?.id ?? card]
+            Task { await store.load() }
         }
         .confirmationDialog(
             store.confirming?.entry.confirm ?? "",
@@ -241,7 +332,7 @@ struct FeedView: View {
             presenting: store.confirming
         ) { choice in
             Button(choice.action?.label ?? "Send", role: choice.action?.isDestructive == true ? .destructive : nil) {
-                Task { await store.send(choice, client: client) }
+                Task { await store.send(choice) }
             }
             Button("Cancel", role: .cancel) {}
         }
@@ -251,9 +342,9 @@ struct FeedView: View {
         } message: {
             Text(verbatim: store.failure ?? "")
         }
-        .task { await store.load(client) }
+        .task { await store.load() }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
-            Task { await store.load(client) }
+            Task { await store.load() }
         }
     }
 
@@ -312,7 +403,7 @@ struct FeedView: View {
             switch problem {
             case .unsupported:
                 notice("Update herdr to read feeds",
-                       "This machine's herdr predates feed cards. Update it from Settings, then come back.")
+                       "The herdr on your machines predates feed cards. Update it from Settings, then come back.")
             case .failed(let message):
                 notice("Couldn't load the feed", message)
             }
@@ -334,7 +425,7 @@ struct FeedView: View {
                     ForEach(pending) { entry in
                         FeedAskCard(entry: entry, sending: store.sending.contains(entry.id),
                                     onOpen: { path.append(entry.id) },
-                                    onChoose: { store.choose(entry, $0, text: nil, client: client) })
+                                    onChoose: { store.choose(entry, $0, text: nil) })
                             .listRowBackground(Palette.ground)
                             .listRowSeparator(.hidden)
                             .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 16))
@@ -386,7 +477,7 @@ struct FeedView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .refreshable { store.settle(); await store.load(client) }
+        .refreshable { store.settle(); await store.load() }
     }
 
     private func sectionHeader(_ title: String, tint: Color) -> some View {
@@ -453,14 +544,14 @@ struct FeedView: View {
                 Text("No cards yet")
                     .font(Typography.app(20, .semibold))
                     .foregroundStyle(Palette.text)
-                Text("Scripts on this machine publish here. Each JSON file in a folder under this one is a card: something to read, or a question with buttons. Write it to a temporary name and rename it into place, so it's never read half-written.")
+                Text("Scripts on your machines publish here. Each JSON file in a folder under this one is a card: something to read, or a question with buttons. Write it to a temporary name and rename it into place, so it's never read half-written.")
                     .font(Typography.app(15))
                     .foregroundStyle(Palette.textDim)
                 CopyableCommand(command: "~/.config/herdr/feeds/<source>/<id>.json")
             }
             .padding(20)
         }
-        .refreshable { await store.load(client) }
+        .refreshable { await store.load() }
     }
 
     private func notice(_ title: String, _ message: String) -> some View {
@@ -473,7 +564,7 @@ struct FeedView: View {
                 .font(Typography.app(15))
                 .foregroundStyle(Palette.textDim)
                 .multilineTextAlignment(.center)
-            Button("Try again") { Task { await store.load(client) } }
+            Button("Try again") { Task { await store.load() } }
                 .font(Typography.app(15, .semibold))
                 .padding(.top, 6)
             Spacer()
@@ -490,7 +581,8 @@ private struct FeedMeta: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Text(verbatim: entry.source.uppercased())
+            Text(verbatim: ([FeedStore.shared.machineLabel(entry), entry.source].compactMap { $0 }
+                .joined(separator: " · ")).uppercased())
                 .font(Typography.app(11, .semibold))
                 .kerning(0.6)
                 .lineLimit(1)
@@ -664,22 +756,20 @@ private struct FeedRow: View {
 /// and buttons) at the bottom. Star and up/down to the neighbouring cards are in the bottom
 /// bar. Opening it marks it read.
 struct FeedReaderView: View {
-    let client: HerdrClient
     @ObservedObject private var store = FeedStore.shared
     @State private var entryID: String
     @State private var text = ""
     @FocusState private var typing: Bool
 
-    init(entryID: String, client: HerdrClient) {
+    init(entryID: String) {
         _entryID = State(initialValue: entryID)
-        self.client = client
     }
 
     var body: some View {
         let entry = store.entry(id: entryID)
         // A question pages through the other questions; anything else through the timeline.
         let list = entry?.isPending() == true ? store.pending : store.visible
-        let index = list.firstIndex { $0.id == entryID }
+        let index = list.firstIndex { $0.id == entry?.id }
         Group {
             if let entry {
                 ScrollView {
@@ -777,7 +867,7 @@ struct FeedReaderView: View {
                     if entry.actions.isEmpty {
                         Button {
                             typing = false
-                            store.choose(entry, nil, text: note, client: client)
+                            store.choose(entry, nil, text: note)
                         } label: {
                             Image(systemName: "arrow.up")
                                 .font(.system(size: 16, weight: .bold))
@@ -794,7 +884,7 @@ struct FeedReaderView: View {
             if !entry.actions.isEmpty {
                 FeedActionButtons(entry: entry, sending: sending) { action in
                     typing = false
-                    store.choose(entry, action, text: note.isEmpty ? nil : note, client: client)
+                    store.choose(entry, action, text: note.isEmpty ? nil : note)
                 }
             } else if sending {
                 ProgressView().controlSize(.small).tint(Palette.textDim)

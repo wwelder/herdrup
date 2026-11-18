@@ -49,7 +49,9 @@ public struct FeedReply: Codable, Sendable, Hashable {
 
 /// One card, as the timeline and the reader show it.
 public struct FeedEntry: Identifiable, Codable, Sendable, Hashable {
-    /// `source/id`: the file's own name, so read and starred marks survive a rewrite.
+    /// `source/id`, the file's own name, so read and starred marks survive a rewrite. A card
+    /// read from one of several machines is `machine|source/id`: two machines can serve the
+    /// same file name.
     public let id: String
     public let source: String
     public let cardID: String
@@ -69,6 +71,13 @@ public struct FeedEntry: Identifiable, Codable, Sendable, Hashable {
     /// What the script made of the answer, written back into the card.
     public let outcome: String?
     public var reply: FeedReply?
+    /// The machine that serves the card, as the app keys its saved machines. Nil for a card
+    /// starred before the feed read every machine.
+    public var machine: String? = nil
+
+    /// The id the card had when the feed came from one machine: what older read and starred
+    /// marks, and a question push, name it by.
+    public var legacyID: String { source + "/" + cardID }
 
     /// Whether the card asks the owner something.
     public var asks: Bool { !actions.isEmpty || input != nil }
@@ -94,7 +103,7 @@ public enum FeedCards {
     public enum Failure: Error, Equatable { case notACard }
 
     /// The card in `file`; throws when its JSON is not an object.
-    public static func entry(_ file: FeedCardFile) throws -> FeedEntry {
+    public static func entry(_ file: FeedCardFile, machine: String? = nil) throws -> FeedEntry {
         guard let json = file.card,
               let card = try? JSONDecoder().decode(Card.self, from: Data(json.utf8)) else {
             throw Failure.notACard
@@ -104,13 +113,14 @@ public enum FeedCards {
             .map { FeedReply(action: $0.action, text: $0.text, at: $0.at.flatMap(parseDate)) }
         let body = card.body ?? ""
         let title = card.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let name = file.source + "/" + file.id
         return FeedEntry(
-            id: file.source + "/" + file.id, source: file.source, cardID: file.id,
+            id: machine.map { $0 + "|" + name } ?? name, source: file.source, cardID: file.id,
             title: title.isEmpty ? file.id : title, body: body,
             summary: card.summary?.isEmpty == false ? card.summary : nil,
             date: card.date.flatMap(parseDate), link: card.link.flatMap { URL(string: $0) },
             actions: card.actions ?? [], input: card.input, confirm: card.confirm,
-            expires: card.expires.flatMap(parseDate), outcome: card.outcome, reply: reply)
+            expires: card.expires.flatMap(parseDate), outcome: card.outcome, reply: reply, machine: machine)
     }
 
     /// Newest first; undated cards last, in their given order.

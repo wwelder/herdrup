@@ -2020,11 +2020,15 @@ struct TerminalHomeView: View {
     ///
     /// ONE definition of the sections (#360): the iPhone `TabView`, the iPad/Mac sidebar
     /// bar and the minimised rail all read label and icon from here, so they cannot drift.
+    ///
+    /// Agents shows the machine that is open. Gram and Feed belong to no machine: they are
+    /// the same whichever one is open.
     private enum HomeTab: String, Hashable, CaseIterable {
-        case agents, feed, settings
+        case gram, agents, feed, settings
 
         var label: String {
             switch self {
+            case .gram: return "Gram"
             case .agents: return "Agents"
             case .feed: return "Feed"
             case .settings: return "Settings"
@@ -2035,6 +2039,7 @@ struct TerminalHomeView: View {
         /// the same explicitly with `.environment(\.symbolVariants, .fill)`.
         var icon: String {
             switch self {
+            case .gram: return "bubble.left.and.bubble.right"
             case .agents: return "square.grid.2x2"
             case .feed: return "newspaper"
             case .settings: return "gearshape"
@@ -2378,6 +2383,15 @@ struct TerminalHomeView: View {
                     case .settings:
                         SectionTopBar(title: "Settings") { hideSidebarButton }
                         settingsIndex   // the section index; each jumps the detail pane
+                    case .gram:
+                        SectionTopBar(title: "Gram") { hideSidebarButton }
+                        Text("One conversation with your orchestrator, whichever machine is open in Agents. Settings picks the machine it runs on.")
+                            .font(Typography.app(13))
+                            .foregroundStyle(Palette.textDim)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.horizontal, 16)
+                            .padding(.top, 10)
+                        Spacer(minLength: 0)
                     case .feed:
                         SectionTopBar(title: "Feed") { hideSidebarButton }
                         FeedTimelineList()
@@ -2556,8 +2570,10 @@ struct TerminalHomeView: View {
                     if frontID == nil {
                         SelectAgentPlaceholder(lines: glyphFieldLines, spotlight: glyphFieldSpotlight)
                     }
+                case .gram:
+                    GramTab(isActive: true)
                 case .feed:
-                    FeedView(client: client)
+                    FeedView()
                 case .settings:
                     SettingsView(
                         client: client,
@@ -2901,7 +2917,7 @@ struct TerminalHomeView: View {
         switch tab {
         case .feed: return FeedStore.shared.pendingCount
         case .settings: return settingsBadge
-        case .agents: return 0
+        case .agents, .gram: return 0
         }
     }
 
@@ -2961,11 +2977,16 @@ struct TerminalHomeView: View {
             // standard bar below that) replaces the old hand-built pill (#88). Terminal
             // is NOT a tab — it fronts a keep-mounted pane over everything (below).
             TabView(selection: tabSelection) {
+                // Not foreground under a fronted pane: two pages must not both hold the keyboard.
+                GramTab(isActive: selectedTab == .gram && frontID == nil)
+                    .tag(HomeTab.gram)
+                    .tabItem { Label(HomeTab.gram.label, systemImage: HomeTab.gram.icon) }
+
                 agentsTab
                     .tag(HomeTab.agents)
                     .tabItem { Label(HomeTab.agents.label, systemImage: HomeTab.agents.icon) }
 
-                FeedView(client: client)
+                FeedView()
                     .tag(HomeTab.feed)
                     .tabItem { Label(HomeTab.feed.label, systemImage: HomeTab.feed.icon) }
                     .modifier(FeedPendingBadge())
@@ -3104,11 +3125,12 @@ struct TerminalHomeView: View {
             await runLiveEvents()
         }
         // The Feed tab's badge counts the cards waiting for the owner, so the feed is fetched
-        // on every tab, not only while the Feed page is open.
+        // on every tab, not only while the Feed page is open. It reads every saved machine,
+        // not only the one this view shows.
         // ponytail: a minute's poll; herdr pushing new questions would make it immediate.
         .task {
             while !Task.isCancelled {
-                await FeedStore.shared.load(client)
+                await FeedStore.shared.load()
                 try? await Task.sleep(nanoseconds: 60_000_000_000)
             }
         }
@@ -5524,6 +5546,10 @@ struct TerminalPaneContent: View {
     /// Back out to the agents list (header chevron / left-edge swipe). Replaces the old
     /// NavigationStack `dismiss` now that panes live in a keep-alive container, not a push.
     let onClose: () -> Void
+    /// The page is a tab's whole content (Gram), not a pane fronted over the agents list: there
+    /// is no list to go back to, so it has no back button or edge swipe, and it does not
+    /// offer to close the agent.
+    let embedded: Bool
     @State private var reply: String
     @StateObject private var composerKeyboard = ComposerKeyboard()
     /// Every staged attachment, in paste order. Each sends as its own gram message and
@@ -5700,7 +5726,9 @@ struct TerminalPaneContent: View {
     /// state.
     init(client: HerdrClient, paneID: String, title: String, agent: AgentInfo? = nil,
          initialReply: String = "", isForeground: Bool = true,
-         onNavigate: @escaping (Int) -> Void = { _ in }, onClose: @escaping () -> Void = {}) {
+         onNavigate: @escaping (Int) -> Void = { _ in }, onClose: @escaping () -> Void = {},
+         embedded: Bool = false) {
+        self.embedded = embedded
         self.client = client
         self.paneID = paneID
         self.title = title
@@ -5985,7 +6013,7 @@ struct TerminalPaneContent: View {
         // terminal scroll. Rendered ONLY for the front pane: EdgeSwipeBack attaches its
         // recognizer to the WINDOW, so N keep-mounted panes would otherwise stack N
         // recognizers that all fire on one edge swipe.
-        .overlay { if isForeground { EdgeSwipeBack { onClose() } } }
+        .overlay { if isForeground && !embedded { EdgeSwipeBack { onClose() } } }
         // Kept-alive panes behind the front one, Gram or Settings hold their status dot still,
         // and so does the front one while the scene is inactive, like the roster's rings.
         .environment(\.statusMotion, isForeground && scenePhase == .active)
@@ -6094,7 +6122,11 @@ struct TerminalPaneContent: View {
     /// underneath (a height change resizes the PTY and reflows the buffer).
     private var header: some View {
         HStack(spacing: 10) {
-            PaneHeaderBackButton { onClose() }
+            if embedded {
+                Spacer().frame(width: 6)
+            } else {
+                PaneHeaderBackButton { onClose() }
+            }
             if findOpen {
                 findField
             } else {
@@ -6230,13 +6262,15 @@ struct TerminalPaneContent: View {
                           systemImage: mute.isMuted(paneID) ? "bell" : "bell.slash")
                 }
             }
-            Button(role: .destructive) {
-                Task {
-                    try? await client.closePane(paneID: paneID)
-                    onClose()   // the pane is gone → back to the agents list
+            if !embedded {
+                Button(role: .destructive) {
+                    Task {
+                        try? await client.closePane(paneID: paneID)
+                        onClose()   // the pane is gone → back to the agents list
+                    }
+                } label: {
+                    Label("Close agent", systemImage: "xmark.circle")
                 }
-            } label: {
-                Label("Close agent", systemImage: "xmark.circle")
             }
         } label: {
             PaneActionsMenuLabel(notificationsOff: !fromOtherSession && mute.isMuted(paneID))
@@ -7776,6 +7810,7 @@ struct SettingsView: View {
                                     appearanceSection
                                     typingSection
                                     chatSection
+                                    gramSection
                                 }
                                 previewsSection
                                 troubleSection
@@ -7833,6 +7868,7 @@ struct SettingsView: View {
             appearanceControls
             typingSection
             chatSection
+            gramSection
         }
     }
 
@@ -9025,6 +9061,8 @@ struct SettingsView: View {
     /// same key, so a change applies to the next key typed.
     @AppStorage(PredictiveEchoSetting.key) private var predictiveEcho = PredictiveEchoSetting.defaultValue
     @AppStorage(ChatPreference.key) private var ompOpensIn = ChatPreference.defaultValue
+    @AppStorage(OrchestratorPreference.machineKey) private var gramMachine = ""
+    @AppStorage(OrchestratorPreference.agentKey) private var gramAgent = OrchestratorPreference.defaultAgent
 
     /// The terminal font size (points), the same app-wide pref the per-agent ⋯ menu
     /// and ⌘± drive. Writing it here live-updates any open terminal (LiveTerminalView
@@ -9071,6 +9109,52 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 0) {
             sectionLabel("TEXT SIZE")
             appearanceControls
+        }
+    }
+
+    /// "Gram": the machine the orchestrator runs on and its agent name there.
+    private var gramSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            sectionLabel("GRAM")
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 12) {
+                    Text("Orchestrator runs on").font(Typography.app(17)).foregroundStyle(Palette.text)
+                    Spacer(minLength: 8)
+                    Picker("Orchestrator runs on", selection: $gramMachine) {
+                        Text("Not set").tag("")
+                        ForEach(SavedHostsStore.shared.hosts) { host in
+                            Text(verbatim: host.label).tag(host.id.uuidString)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .tint(Palette.textDim)
+                    .accessibilityIdentifier("settings-gram-machine")
+                }
+                .padding(.horizontal, 18).padding(.vertical, 8)
+                .frame(minHeight: 52)
+                rowDivider
+                HStack(spacing: 12) {
+                    Text("Agent name").font(Typography.app(17)).foregroundStyle(Palette.text)
+                    Spacer(minLength: 8)
+                    TextField(OrchestratorPreference.defaultAgent, text: $gramAgent)
+                        .font(Typography.app(17))
+                        .foregroundStyle(Palette.textDim)
+                        .multilineTextAlignment(.trailing)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .accessibilityIdentifier("settings-gram-agent")
+                }
+                .padding(.horizontal, 18).padding(.vertical, 8)
+                .frame(minHeight: 52)
+                rowDivider
+                Text("Gram is one conversation with your orchestrator, the agent that tracks the work on all your machines. It stays the same whichever machine is open in Agents.")
+                    .font(Typography.app(12)).foregroundStyle(Palette.textFaint)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 18).padding(.vertical, 12)
+            }
+            .settingsGroup()
+            .padding(.horizontal, 16).padding(.top, 10)
         }
     }
 

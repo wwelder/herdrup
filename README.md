@@ -48,8 +48,15 @@ herdr's JSON API exposes both, so panes and agents become real UI objects instea
   password prompt never shows your typing. Auto shows guesses only on a slow link (round trip
   over 30 ms) and underlines unconfirmed ones over 80 ms. Typing latency also reports key to
   prediction and how many guesses were shown, confirmed and wrong.
-- **Gram** — direct messaging between you and your agents: get pinged when one needs input, send text,
-  and share images, videos, or files (several at once) straight to an agent.
+- **Gram** — one conversation with your orchestrator, the long-lived agent that tracks the work on
+  all your machines. It is that agent's own chat page (transcript, composer, terminal behind the
+  switch) on a connection of its own, so it is the same whichever machine is open in Agents.
+  Settings → Gram picks the machine it runs on and its agent name (default `orchestrator`).
+- **Feed** — cards scripts and agents write on your machines (`~/.config/herdr/feeds/<source>/<id>.json`):
+  something to read, or a question with buttons. The Feed reads every saved machine into one
+  timeline, names the machine on each card, and sends an answer to the machine that owns the card.
+  A machine that cannot be reached keeps its last cards and is named at the end of the timeline.
+  Only Agents is per machine.
 - **omp Chat view** — an omp agent's page opens as a conversation read from its session file:
   your prompts as bubbles, its replies in rendered markdown, its thinking and tool steps folded
   into one expandable line, notes, the current checklist and questions you answer with a tap
@@ -170,6 +177,13 @@ swift test          # live tests run when a herdr socket + sshd are present; ski
 # The vendored terminal core — also Linux-buildable
 swift test --package-path Vendor/SwiftTerm
 ```
+
+For a live check in the simulator, a Debug build launched with
+`HERDR_DEBUG_SEED_HOST="label|user|host|/path/to/ed25519/key"` saves that machine once, without its
+key being typed into the host editor (`SIMCTL_CHILD_HERDR_DEBUG_SEED_HOST=…` with `simctl launch`).
+Build it signed ("Sign to Run Locally", the default): with `CODE_SIGNING_ALLOWED=NO` the simulator
+app has no Keychain and no app group, so it shows no saved machines, and installing such a build
+over a signed one drops the machines that were saved.
 
 `HerdrKit` contains no UIKit or SwiftUI, so it stays Linux-buildable and can be exercised against a real
 herdr server; the iOS app consumes it unchanged. Floors: macOS 14+, iOS 17+ (declared in `Package.swift`

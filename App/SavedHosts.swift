@@ -1,4 +1,5 @@
 import Foundation
+import HerdrKit
 import Security
 
 /// Which credential a saved host authenticates with.
@@ -62,7 +63,25 @@ final class SavedHostsStore: ObservableObject {
         } else {
             hosts = []
         }
+        #if DEBUG
+        seedHostFromEnvironment()
+        #endif
     }
+
+    #if DEBUG
+    /// For a live check in the simulator: `HERDR_DEBUG_SEED_HOST="label|user|host|/path/to/key"`
+    /// saves that machine once, so a simulator can reach a real herdr without a private key
+    /// being typed into the host editor. A simulator reads the Mac's files, so the path is a
+    /// Mac path to an ed25519 private key.
+    private func seedHostFromEnvironment() {
+        guard let spec = ProcessInfo.processInfo.environment["HERDR_DEBUG_SEED_HOST"] else { return }
+        let parts = spec.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 4,
+              !hosts.contains(where: { $0.host == parts[2] && $0.username == parts[1] }),
+              let key = try? String(contentsOfFile: parts[3], encoding: .utf8) else { return }
+        add(nickname: parts[0], host: parts[2], username: parts[1], secret: .key(key))
+    }
+    #endif
 
     /// Adds a NEW saved host (its own id) and stores its secret (key or password) in
     /// the Keychain. Returns false — WITHOUT recording the host — if a required field
@@ -136,6 +155,23 @@ final class SavedHostsStore: ObservableObject {
         hosts[i].authKind = newKind
         persist()
         return true
+    }
+
+    /// What it takes to connect to a saved host's default herdr session, with its secret from
+    /// the Keychain. Nil when the host is malformed or this phone holds no secret for it.
+    func credentials(for saved: SavedHost) -> SSHCredentials? {
+        guard let endpoint = HostEndpoint.parse(saved.host) else { return nil }
+        switch saved.auth {
+        case .key:
+            guard let key = key(for: saved)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !key.isEmpty else { return nil }
+            return SSHCredentials(host: endpoint.host, port: endpoint.port, username: saved.username,
+                                  privateKeyPEM: key, remoteSocketPath: "")
+        case .password:
+            guard let password = password(for: saved), !password.isEmpty else { return nil }
+            return SSHCredentials(host: endpoint.host, port: endpoint.port, username: saved.username,
+                                  password: password, remoteSocketPath: "")
+        }
     }
 
     /// The private key for a saved host, from the Keychain. Nil if missing/unreadable
