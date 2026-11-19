@@ -1,6 +1,8 @@
 import Foundation
 import Combine
+#if !targetEnvironment(macCatalyst)
 import ActivityKit
+#endif
 import HerdrKit
 
 /// Owns the single agent-session Live Activity: starts it when a session connects,
@@ -15,6 +17,19 @@ import HerdrKit
 final class LiveActivityController: ObservableObject {
     static let shared = LiveActivityController()
     private init() {}
+
+    #if targetEnvironment(macCatalyst)
+    // Mac Catalyst has no Live Activities (ActivityKit is unavailable there). The session's
+    // machine name is still kept for the widget data; every Live Activity call does nothing.
+    @Published private(set) var pushToken: String?
+    private var hostLabel: String?
+    var apm: Double? { nil }
+    var currentHostLabel: String? { hostLabel }
+    func start(hostLabel: String, state: AgentActivityAttributes.ContentState) { self.hostLabel = hostLabel }
+    func recoverIfEnded(_ state: AgentActivityAttributes.ContentState) {}
+    func update(_ state: AgentActivityAttributes.ContentState) {}
+    func end() { hostLabel = nil }
+    #else
 
     private var activity: Activity<AgentActivityAttributes>?
 
@@ -210,6 +225,7 @@ final class LiveActivityController: ObservableObject {
             }
         }
     }
+    #endif
 
     // MARK: - Mapping HerdrKit → the shared content state
 

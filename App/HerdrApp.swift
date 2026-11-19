@@ -3783,7 +3783,7 @@ struct TerminalHomeView: View {
     /// 80-agent roster eagerly.
     @ViewBuilder
     private var agentRosterStack: some View {
-        if ProcessInfo.processInfo.isiOSAppOnMac || forceEagerAgentRosterStack || groups.document != nil {
+        if ProcessInfo.processInfo.isOnMac || forceEagerAgentRosterStack || groups.document != nil {
             VStack(alignment: .leading, spacing: 0) {
                 rosterTitleBlock
                 agentRosterRows
@@ -6101,7 +6101,7 @@ struct TerminalPaneContent: View {
                 // would also have suppressed a legitimate one under App Nap. Here the
                 // platform WIDENS (iOS always reseeds) and staleness still governs the Mac,
                 // so an App-Nap-suspended Mac window reads stale and reseeds correctly.
-                let streamDied = !ProcessInfo.processInfo.isiOSAppOnMac
+                let streamDied = !ProcessInfo.processInfo.isOnMac
                     || terminalLiveness.isStale(
                         timeout: LiveTerminalView.streamStuckTimeout
                     )

@@ -31,7 +31,7 @@ final class TerminalPiP: NSObject, ObservableObject {
     }
 
     private static var supported: Bool {
-        AVPictureInPictureController.isPictureInPictureSupported() && !ProcessInfo.processInfo.isiOSAppOnMac
+        AVPictureInPictureController.isPictureInPictureSupported() && !ProcessInfo.processInfo.isOnMac
     }
 
     /// The pane in front: its terminal is what PiP shows if the app is backgrounded now.

@@ -19,6 +19,10 @@
 # Usage:
 #   scripts/testflight.sh                         # archive + export a signed .ipa (no upload)
 #   TESTFLIGHT_UPLOAD=1 scripts/testflight.sh     # ...and upload to TestFlight
+#   PLATFORM=mac TESTFLIGHT_UPLOAD=1 scripts/testflight.sh   # the Mac build (Mac Catalyst)
+#
+# PLATFORM=mac archives the same scheme for Mac Catalyst and exports a .pkg. The app record
+# needs its macOS platform added in App Store Connect first.
 #
 # Upload requires the App Store Connect app record for inc.simcast.herdrup to exist.
 set -euo pipefail
@@ -27,8 +31,12 @@ cd "$(dirname "$0")/.."
 SCHEME="${SCHEME:-Herdr}"
 CONFIG="${CONFIG:-Release}"
 BUILD_DIR="${BUILD_DIR:-build}"
-ARCHIVE="$BUILD_DIR/Herdr.xcarchive"
-EXPORT_DIR="$BUILD_DIR/export"
+PLATFORM="${PLATFORM:-ios}"
+case "$PLATFORM" in
+  ios) DESTINATION='generic/platform=iOS'; ARCHIVE="$BUILD_DIR/Herdr.xcarchive"; EXPORT_DIR="$BUILD_DIR/export" ;;
+  mac) DESTINATION='generic/platform=macOS,variant=Mac Catalyst'; ARCHIVE="$BUILD_DIR/HerdrMac.xcarchive"; EXPORT_DIR="$BUILD_DIR/export-mac" ;;
+  *) echo "error: PLATFORM must be ios or mac, not '$PLATFORM'" >&2; exit 1 ;;
+esac
 UPLOAD="${TESTFLIGHT_UPLOAD:-0}"
 
 # Each TestFlight build needs a unique, monotonic build number. Default to a
@@ -45,12 +53,12 @@ for plist in App/Info.plist HerdrWidgets/Info.plist HerdrNotificationService/Inf
     || /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $BUILD_NUMBER" "$plist"
 done
 
-echo "==> archive ($CONFIG, build $BUILD_NUMBER)"
+echo "==> archive ($PLATFORM, $CONFIG, build $BUILD_NUMBER)"
 xcodebuild archive \
   -project Herdr.xcodeproj \
   -scheme "$SCHEME" \
   -configuration "$CONFIG" \
-  -destination 'generic/platform=iOS' \
+  -destination "$DESTINATION" \
   -archivePath "$ARCHIVE" \
   CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
   -allowProvisioningUpdates
@@ -64,14 +72,14 @@ if [ "$UPLOAD" = "1" ]; then
     -allowProvisioningUpdates
   echo "==> uploaded (build $BUILD_NUMBER). It appears in TestFlight after Apple finishes processing."
 else
-  echo "==> export signed .ipa (no upload)"
+  echo "==> export the signed package (no upload)"
   xcodebuild -exportArchive \
     -archivePath "$ARCHIVE" \
     -exportOptionsPlist ci/ExportOptions.plist \
     -exportPath "$EXPORT_DIR" \
     -allowProvisioningUpdates
-  IPA="$(ls "$EXPORT_DIR"/*.ipa 2>/dev/null | head -1 || true)"
-  [ -n "$IPA" ] || { echo "error: no .ipa produced in $EXPORT_DIR" >&2; exit 1; }
+  IPA="$(find "$EXPORT_DIR" -maxdepth 1 \( -name '*.ipa' -o -name '*.pkg' \) 2>/dev/null | head -1 || true)"
+  [ -n "$IPA" ] || { echo "error: no .ipa or .pkg produced in $EXPORT_DIR" >&2; exit 1; }
   echo "==> archived + exported: $IPA (build $BUILD_NUMBER)"
   echo "    Set TESTFLIGHT_UPLOAD=1 to upload. Upload needs the App Store Connect"
   echo "    app record for inc.simcast.herdrup."

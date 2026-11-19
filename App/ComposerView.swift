@@ -803,6 +803,6 @@ final class ComposerKeyboard: ObservableObject {
 
     private func updateVisibility() {
         let covered = keyboardFrame.intersection(UIScreen.main.bounds).height
-        isVisible = !ProcessInfo.processInfo.isiOSAppOnMac && covered >= Self.softwareKeyboardMinimumHeight
+        isVisible = !ProcessInfo.processInfo.isOnMac && covered >= Self.softwareKeyboardMinimumHeight
     }
 }

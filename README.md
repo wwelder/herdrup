@@ -159,6 +159,11 @@ there is no system libssh2 to install, which is exactly what lets the protocol l
 **[Download on the App Store](https://apps.apple.com/app/id6798087089)** — herdrup is live, free, and
 iPhone + iPad (it also installs on Apple Silicon Macs as a Designed-for-iPad app).
 
+The same app also builds as a Mac app (Mac Catalyst) with the Mac's own interface: drawn 1:1
+instead of as an iPad scaled to 77 %, which is a much lighter window to composite. The Mac build
+has no Live Activity, widgets, notification service or share extension (ActivityKit does not
+exist on the Mac; the extensions are iOS-only for now).
+
 You can also [build it yourself](#building-from-source); it is Apache-2.0 and the whole client is in
 this repository.
 
@@ -173,6 +178,9 @@ authored and reviewed without an opaque project blob.
 brew install xcodegen
 xcodegen generate
 xcodebuild -scheme Herdr -destination 'generic/platform=iOS Simulator' build
+
+# The Mac build (Mac Catalyst). Unsigned it runs with the mocks only: no Keychain, no saved machines.
+xcodebuild -scheme Herdr -destination 'platform=macOS,variant=Mac Catalyst' CODE_SIGNING_ALLOWED=NO build
 
 # The protocol layer, HerdrKit — builds and tests on Linux and macOS
 swift build
