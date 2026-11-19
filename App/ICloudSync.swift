@@ -291,7 +291,7 @@ final class ICloudSync: ObservableObject {
             default: status = .upToDate
             }
         case .offerUpload: status = .nothingInCloud
-        case .upload: upload()
+        case .upload: upload(onTopOf: cloud)
         case .download: if let cloud { download(cloud) }
         case .conflict:
             // Ask once when the conflict appears; after "Not now" the row offers the question again.
@@ -304,10 +304,10 @@ final class ICloudSync: ObservableObject {
     func resolve(_ direction: Direction) {
         choosing = false
         switch direction {
-        // The owner has seen iCloud's copy and replaces it on purpose. Every upload records the
-        // copy it replaces as an ancestor, so the device that uploaded that one follows instead
-        // of being asked too.
-        case .upload: upload()
+        // The owner has seen iCloud's copy and replaces it on purpose. The upload records the
+        // copy the question was about as an ancestor, so the device that uploaded that one
+        // follows instead of being asked too.
+        case .upload: upload(onTopOf: cloud)
         case .download:
             guard let cloud = store.load() else { status = .failed; return }
             defaults.set(cloud.revision + "|" + localDigest(), forKey: Self.pendingKey)
@@ -340,12 +340,15 @@ final class ICloudSync: ObservableObject {
     /// The owner's tap on "Upload" while iCloud shows no copy.
     func uploadFirst() {
         guard enabled, status == .nothingInCloud else { return }
-        upload()
+        upload(onTopOf: nil)
     }
 
-    private func upload() {
+    /// - Parameter before: iCloud's copy as this device last read it, the one the decision to
+    ///   upload was made against. It is not read again here: a copy another device publishes
+    ///   in between was never seen, and must not be recorded as an ancestor, or that device
+    ///   would take this upload as built on its own and lose its change without a question.
+    private func upload(onTopOf before: CloudMachines?) {
         retry?.cancel()
-        let before = store.load()
         // Seal with the key iCloud's copy already uses when this device has it, because the
         // other devices then have it too. Otherwise with a new one, which they wait for.
         var key = before.flatMap { store.key($0.keyID) }
