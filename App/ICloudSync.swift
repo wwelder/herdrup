@@ -14,6 +14,9 @@ import UIKit
 struct CloudMachines: Codable, Equatable {
     /// A new value on every upload: how a device tells whether iCloud's copy changed.
     var revision: String
+    /// The revision the uploading device had last agreed on: tells a device whose own upload
+    /// was replaced whether the replacement had seen it.
+    var parent: String?
     var hosts: [SavedHost]
     /// Per machine id, the version of its secret that goes with this revision. A machine whose
     /// device held no secret has no entry.
@@ -21,12 +24,10 @@ struct CloudMachines: Codable, Equatable {
     /// The device that uploaded it, for the conflict question.
     var device: String
     var updatedAt: Date
-}
 
-/// One machine's secret as iCloud Keychain holds it.
-struct CloudSecret: Codable, Equatable {
-    var version: String
-    var secret: String
+    /// How a store names one version of one machine's secret.
+    static func secretKey(_ id: String, _ version: String) -> String { id + "|" + version }
+    var secretKeys: Set<String> { Set(secretVersions.map { Self.secretKey($0.key, $0.value) }) }
 }
 
 /// Where iCloud's copy lives. A protocol so a Debug run can stand a folder in for iCloud.
@@ -35,8 +36,12 @@ protocol CloudMachineStore {
     var available: Bool { get }
     func load() -> CloudMachines?
     func save(_ machines: CloudMachines) -> Bool
-    func secret(for id: String) -> CloudSecret?
-    func saveSecret(_ secret: CloudSecret, for id: String) -> Bool
+    /// One version of a machine's secret. A version is never rewritten: an upload adds the new
+    /// ones, publishes the list, and only then drops what the list no longer names, so the
+    /// published list always names secrets that exist.
+    func secret(for id: String, version: String) -> String?
+    func saveSecret(_ secret: String, for id: String, version: String) -> Bool
+    /// `keep` holds `CloudMachines.secretKey` values.
     func deleteSecrets(except keep: Set<String>)
     /// Calls `changed` on the main queue when another device changed the copy.
     func observe(_ changed: @escaping () -> Void)
@@ -62,35 +67,33 @@ struct ICloudMachineStore: CloudMachineStore {
         return NSUbiquitousKeyValueStore.default.synchronize()
     }
 
-    private func query(_ id: String?) -> [String: Any] {
+    /// The Keychain account is `CloudMachines.secretKey`: one item per version of a secret.
+    private func query(_ account: String?) -> [String: Any] {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrSynchronizable as String: kCFBooleanTrue as Any,
         ]
-        if let id { query[kSecAttrAccount as String] = id }
+        if let account { query[kSecAttrAccount as String] = account }
         return query
     }
 
-    func secret(for id: String) -> CloudSecret? {
-        var query = query(id)
+    func secret(for id: String, version: String) -> String? {
+        var query = query(CloudMachines.secretKey(id, version))
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var item: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess, let data = item as? Data else { return nil }
-        return try? JSONDecoder().decode(CloudSecret.self, from: data)
+        return String(data: data, encoding: .utf8)
     }
 
-    func saveSecret(_ secret: CloudSecret, for id: String) -> Bool {
-        guard let data = try? JSONEncoder().encode(secret) else { return false }
-        let updated = SecItemUpdate(query(id) as CFDictionary, [kSecValueData as String: data] as CFDictionary)
-        if updated == errSecSuccess { return true }
-        guard updated == errSecItemNotFound else { return false }
-        var add = query(id)
-        add[kSecValueData as String] = data
+    func saveSecret(_ secret: String, for id: String, version: String) -> Bool {
+        var add = query(CloudMachines.secretKey(id, version))
+        add[kSecValueData as String] = Data(secret.utf8)
         // Not "this device only": the item has to leave the device to sync.
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
+        let status = SecItemAdd(add as CFDictionary, nil)
+        return status == errSecSuccess || status == errSecDuplicateItem
     }
 
     func deleteSecrets(except keep: Set<String>) {
@@ -101,8 +104,8 @@ struct ICloudMachineStore: CloudMachineStore {
         guard SecItemCopyMatching(all as CFDictionary, &items) == errSecSuccess,
               let found = items as? [[String: Any]] else { return }
         for item in found {
-            guard let id = item[kSecAttrAccount as String] as? String, !keep.contains(id) else { continue }
-            SecItemDelete(query(id) as CFDictionary)
+            guard let account = item[kSecAttrAccount as String] as? String, !keep.contains(account) else { continue }
+            SecItemDelete(query(account) as CFDictionary)
         }
     }
 
@@ -125,7 +128,7 @@ struct FolderCloudStore: CloudMachineStore {
     }
 
     private var list: URL { folder.appendingPathComponent("machines.json") }
-    private func file(_ id: String) -> URL { folder.appendingPathComponent("secret-\(id).json") }
+    private func file(_ key: String) -> URL { folder.appendingPathComponent("secret-\(key).txt") }
 
     var available: Bool { true }
     func load() -> CloudMachines? {
@@ -136,17 +139,16 @@ struct FolderCloudStore: CloudMachineStore {
         guard let data = try? JSONEncoder().encode(machines) else { return false }
         return (try? data.write(to: list, options: .atomic)) != nil
     }
-    func secret(for id: String) -> CloudSecret? {
-        (try? Data(contentsOf: file(id))).flatMap { try? JSONDecoder().decode(CloudSecret.self, from: $0) }
+    func secret(for id: String, version: String) -> String? {
+        try? String(contentsOf: file(CloudMachines.secretKey(id, version)), encoding: .utf8)
     }
-    func saveSecret(_ secret: CloudSecret, for id: String) -> Bool {
+    func saveSecret(_ secret: String, for id: String, version: String) -> Bool {
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        guard let data = try? JSONEncoder().encode(secret) else { return false }
-        return (try? data.write(to: file(id), options: .atomic)) != nil
+        return (try? secret.write(to: file(CloudMachines.secretKey(id, version)), atomically: true, encoding: .utf8)) != nil
     }
     func deleteSecrets(except keep: Set<String>) {
         for name in (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
-        where name.hasPrefix("secret-") && !keep.contains(String(name.dropFirst(7).dropLast(5))) {
+        where name.hasPrefix("secret-") && !keep.contains(String(name.dropFirst(7).dropLast(4))) {
             try? FileManager.default.removeItem(at: folder.appendingPathComponent(name))
         }
     }
@@ -169,6 +171,8 @@ final class ICloudSync: ObservableObject {
 
     enum Status: Equatable {
         case off, unavailable, upToDate, uploaded(Int), downloaded(Int)
+        /// iCloud shows no copy and this device has machines: the upload waits for the owner.
+        case nothingInCloud
         /// iCloud's list is here but iCloud Keychain has not delivered every secret yet.
         case waitingForKeys
         case conflict, failed
@@ -179,6 +183,10 @@ final class ICloudSync: ObservableObject {
     private static let enabledKey = "icloud.sync.machines"
     private static let revisionKey = "icloud.sync.revision"
     private static let digestKey = "icloud.sync.digest"
+    /// The revision this device last uploaded itself, if that is what it last agreed on.
+    private static let uploadedKey = "icloud.sync.uploaded"
+    /// "revision|local digest" of a download the owner chose that still waits for its keys.
+    private static let pendingKey = "icloud.sync.pendingDownload"
     private static let saltKey = "icloud.sync.salt"
 
     @Published private(set) var status: Status = .off
@@ -194,6 +202,7 @@ final class ICloudSync: ObservableObject {
                 sync()
             } else {
                 retry?.cancel()
+                defaults.removeObject(forKey: Self.pendingKey)
                 status = .off
                 choosing = false
             }
@@ -236,14 +245,28 @@ final class ICloudSync: ObservableObject {
 
     func sync() {
         guard enabled, !applying else { return }
+        // While the device is locked the Keychain reads nothing, which would look like every
+        // secret had gone.
+        guard UIApplication.shared.isProtectedDataAvailable else { return }
         guard store.available else { status = .unavailable; return }
         let cloud = store.load()
         self.cloud = cloud
+        // The owner chose Download and the keys had not arrived: carry on with that choice
+        // rather than asking again, unless either side has changed since.
+        if let pending = defaults.string(forKey: Self.pendingKey) {
+            if let cloud, pending == cloud.revision + "|" + localDigest() {
+                download(cloud)
+                return
+            }
+            defaults.removeObject(forKey: Self.pendingKey)
+        }
         let synced = defaults.string(forKey: Self.revisionKey)
+        let mine = defaults.string(forKey: Self.uploadedKey)
         let action = CloudSyncPlan.action(
             hasCloud: cloud != nil, everSynced: synced != nil, localEmpty: hosts.hosts.isEmpty,
             localChanged: localDigest() != defaults.string(forKey: Self.digestKey),
-            cloudChanged: cloud?.revision != synced)
+            cloudChanged: cloud?.revision != synced,
+            overwritten: mine != nil && mine == synced && cloud?.parent != synced)
         switch action {
         case .none:
             // Keep saying what the last sync did until something else happens.
@@ -251,6 +274,7 @@ final class ICloudSync: ObservableObject {
             case .uploaded, .downloaded: break
             default: status = .upToDate
             }
+        case .offerUpload: status = .nothingInCloud
         case .upload: upload()
         case .download: if let cloud { download(cloud) }
         case .conflict:
@@ -264,32 +288,56 @@ final class ICloudSync: ObservableObject {
     func resolve(_ direction: Direction) {
         choosing = false
         switch direction {
-        case .upload: upload()
+        // The owner has seen iCloud's copy and replaces it on purpose: the new copy counts as
+        // made from it, so the device that uploaded that one follows instead of being asked too.
+        case .upload: upload(replacing: store.load()?.revision)
         case .download:
             guard let cloud = store.load() else { status = .failed; return }
+            defaults.set(cloud.revision + "|" + localDigest(), forKey: Self.pendingKey)
             download(cloud)
         }
     }
 
-    private func upload() {
+    /// The owner's tap on "Upload" while iCloud shows no copy.
+    func uploadFirst() {
+        guard enabled, status == .nothingInCloud else { return }
+        upload()
+    }
+
+    /// - Parameter replacing: the revision in iCloud this upload knowingly replaces, when it
+    ///   is not the one this device last agreed on.
+    private func upload(replacing: String? = nil) {
         retry?.cancel()
+        let before = store.load()
         var versions: [String: String] = [:]
         for host in hosts.hosts {
-            // A machine this device holds no secret for goes up as a list entry only.
-            guard let secret = hosts.secret(for: host) else { continue }
-            let version = UUID().uuidString
-            guard store.saveSecret(CloudSecret(version: version, secret: secret), for: host.id.uuidString) else {
-                status = .failed
-                return
+            let id = host.id.uuidString
+            let published = before?.secretVersions[id]
+            guard let secret = hosts.secret(for: host) else {
+                // This device holds no secret for the machine (a restored phone, say). Leave
+                // whatever iCloud has for it: uploading must never take a secret away.
+                if let published { versions[id] = published }
+                continue
             }
-            versions[host.id.uuidString] = version
+            // An unchanged secret keeps its version, so a rename does not make every other
+            // device wait for iCloud Keychain again.
+            if let published, store.secret(for: id, version: published) == secret {
+                versions[id] = published
+                continue
+            }
+            let version = UUID().uuidString
+            guard store.saveSecret(secret, for: id, version: version) else { status = .failed; return }
+            versions[id] = version
         }
-        let copy = CloudMachines(revision: UUID().uuidString, hosts: hosts.hosts, secretVersions: versions,
+        let copy = CloudMachines(revision: UUID().uuidString, parent: replacing ?? defaults.string(forKey: Self.revisionKey),
+                                 hosts: hosts.hosts, secretVersions: versions,
                                  device: UIDevice.current.name, updatedAt: Date())
+        // If this fails the list in iCloud still names the old versions, which are untouched.
         guard store.save(copy) else { status = .failed; return }
-        store.deleteSecrets(except: Set(versions.keys))
+        store.deleteSecrets(except: copy.secretKeys)
+        defaults.removeObject(forKey: Self.pendingKey)
         cloud = copy
-        remember(copy.revision)
+        remember(copy.revision, uploadedHere: true)
         status = .uploaded(copy.hosts.count)
     }
 
@@ -299,19 +347,20 @@ final class ICloudSync: ObservableObject {
             let id = host.id.uuidString
             guard let version = cloud.secretVersions[id] else { machines.append((host, nil)); continue }
             // The list syncs faster than iCloud Keychain: wait for every secret of this revision.
-            guard let item = store.secret(for: id), item.version == version else {
+            guard let secret = store.secret(for: id, version: version) else {
                 status = .waitingForKeys
                 waitForKeys()
                 return
             }
-            machines.append((host, item.secret))
+            machines.append((host, secret))
         }
         retry?.cancel()
         applying = true
         let replaced = hosts.replaceAll(machines)
         applying = false
         guard replaced else { status = .failed; return }
-        remember(cloud.revision)
+        defaults.removeObject(forKey: Self.pendingKey)
+        remember(cloud.revision, uploadedHere: false)
         status = .downloaded(cloud.hosts.count)
     }
 
@@ -325,9 +374,10 @@ final class ICloudSync: ObservableObject {
         }
     }
 
-    private func remember(_ revision: String) {
+    private func remember(_ revision: String, uploadedHere: Bool) {
         defaults.set(revision, forKey: Self.revisionKey)
         defaults.set(localDigest(), forKey: Self.digestKey)
+        defaults.set(uploadedHere ? revision : nil, forKey: Self.uploadedKey)
     }
 
     /// A fingerprint of this device's machines and secrets, to notice a local change. Salted
@@ -354,6 +404,7 @@ final class ICloudSync: ObservableObject {
 /// (a new device has no machine yet, so no Settings).
 struct ICloudSyncSection: View {
     @ObservedObject private var sync = ICloudSync.shared
+    @ObservedObject private var hosts = SavedHostsStore.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -376,6 +427,11 @@ struct ICloudSyncSection: View {
                         Button("Choose…") { sync.choosing = true }
                             .font(Typography.app(14, .semibold))
                             .accessibilityIdentifier("icloud-sync-choose")
+                    }
+                    if sync.status == .nothingInCloud {
+                        Button("Upload") { sync.uploadFirst() }
+                            .font(Typography.app(14, .semibold))
+                            .accessibilityIdentifier("icloud-sync-upload")
                     }
                 }
                 .padding(.horizontal, 18).padding(.vertical, 12)
@@ -405,7 +461,9 @@ struct ICloudSyncSection: View {
         case .upToDate: return "Up to date."
         case .uploaded(let machines): return "Uploaded \(count(machines)) to iCloud."
         case .downloaded(let machines): return "Downloaded \(count(machines)) from iCloud."
-        case .waitingForKeys: return "Waiting for iCloud Keychain to deliver the keys…"
+        case .nothingInCloud:
+            return "iCloud shows no machines yet. If another device has already uploaded, wait a moment; otherwise upload this device's \(count(hosts.hosts.count))."
+        case .waitingForKeys: return "Waiting for iCloud Keychain to deliver the keys. iCloud Keychain has to be on."
         case .conflict: return "This device and iCloud hold different machines."
         case .failed: return "Couldn't sync. It will try again."
         }

@@ -4,14 +4,19 @@ import XCTest
 /// Which way saved machines move between a device and iCloud.
 final class CloudSyncPlanTests: XCTestCase {
     private func action(cloud: Bool = true, synced: Bool = true, empty: Bool = false,
-                        local: Bool = false, remote: Bool = false) -> CloudSyncAction {
+                        local: Bool = false, remote: Bool = false, overwritten: Bool = false) -> CloudSyncAction {
         CloudSyncPlan.action(hasCloud: cloud, everSynced: synced, localEmpty: empty,
-                             localChanged: local, cloudChanged: remote)
+                             localChanged: local, cloudChanged: remote, overwritten: overwritten)
     }
 
-    func testTheFirstDeviceUploadsAndANewDeviceDownloads() {
-        XCTAssertEqual(action(cloud: false, synced: false), .upload, "nothing in iCloud yet: this device's machines go up")
+    func testNothingIsUploadedUnaskedWhileICloudShowsNoCopy() {
+        XCTAssertEqual(action(cloud: false, synced: false), .offerUpload,
+                       "no copy in sight may mean not delivered yet: the first upload is the owner's tap")
+        XCTAssertEqual(action(cloud: false, synced: true, local: true), .offerUpload, "also when a copy this device once agreed with is gone")
         XCTAssertEqual(action(cloud: false, synced: false, empty: true), .none, "nothing anywhere")
+    }
+
+    func testANewDeviceDownloads() {
         XCTAssertEqual(action(synced: false, empty: true, remote: true), .download,
                        "a new device takes iCloud's machines without asking")
     }
@@ -27,5 +32,7 @@ final class CloudSyncPlanTests: XCTestCase {
         XCTAssertEqual(action(local: true, remote: true), .conflict)
         XCTAssertEqual(action(synced: false, local: true, remote: true), .conflict,
                        "two devices that each paired on their own, turned on for the first time")
+        XCTAssertEqual(action(remote: true, overwritten: true), .conflict,
+                       "another device's upload replaced this device's without having seen it")
     }
 }
