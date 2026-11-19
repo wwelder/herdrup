@@ -122,8 +122,9 @@ herdr's JSON API exposes both, so panes and agents become real UI objects instea
   search recipients or type a message.
 - **iCloud sync** — off until you turn it on (the connect screen, or Settings → Machines), per
   device. The machines you pair are then kept in iCloud with their keys and passwords, so
-  another of your devices can connect without pairing again: the list in iCloud key-value
-  storage, each key or password in iCloud Keychain (end-to-end encrypted), never in the list.
+  another of your devices can connect without pairing again. It is one value in iCloud
+  key-value storage: the list in the clear, the keys and passwords sealed (AES-GCM) with a key
+  that exists only in iCloud Keychain, which is end-to-end encrypted.
   While iCloud shows no machines the app offers Upload and sends nothing by itself; a new
   device takes iCloud's machines; after that a change on one device goes to the others. When
   this device and iCloud both changed since they last agreed, or two uploads crossed, the app

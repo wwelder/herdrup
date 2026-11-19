@@ -209,17 +209,32 @@ final class SavedHostsStore: ObservableObject {
         return saved
     }
 
-    /// Replaces every saved machine with `machines` (iCloud's copy, see `ICloudSync`). Secrets
-    /// are written first, as in `add`: if one does not stick, the list is left as it was.
+    /// Replaces every saved machine with `machines` (iCloud's copy, see `ICloudSync`), all or
+    /// nothing: every incoming secret is saved first, and if one does not stick the secrets
+    /// already written are put back as they were and the list is left alone. Only then are the
+    /// credentials the new list no longer uses removed.
     @discardableResult
     func replaceAll(_ machines: [(host: SavedHost, secret: String?)]) -> Bool {
+        var written: [(store: KeychainCredentialStore, account: String, before: String?)] = []
         for machine in machines {
+            guard let secret = machine.secret else { continue }
             let id = machine.host.id.uuidString
-            let (kept, other) = machine.host.auth == .key ? (keychain, passwordKeychain) : (passwordKeychain, keychain)
-            if let secret = machine.secret {
-                guard kept.save(account: id, secret: secret) else { return false }
+            let store = machine.host.auth == .key ? keychain : passwordKeychain
+            written.append((store, id, store.load(account: id)))
+            guard store.save(account: id, secret: secret) else {
+                for step in written {
+                    if let before = step.before {
+                        _ = step.store.save(account: step.account, secret: before)
+                    } else {
+                        _ = step.store.delete(account: step.account)
+                    }
+                }
+                return false
             }
-            _ = other.delete(account: id)
+        }
+        for machine in machines {
+            // The credential of the kind this machine no longer uses.
+            _ = (machine.host.auth == .key ? passwordKeychain : keychain).delete(account: machine.host.id.uuidString)
         }
         let keep = Set(machines.map(\.host.id))
         for old in hosts where !keep.contains(old.id) {
@@ -242,9 +257,9 @@ final class SavedHostsStore: ObservableObject {
 /// rather than delete-then-add — but is its own service and uses
 /// `WhenUnlockedThisDeviceOnly`: a private key is more sensitive than a host-key
 /// pin, so it is reachable only while the device is unlocked, and these items never
-/// sync. When the owner turns iCloud sync on, `ICloudSync` keeps a separate,
-/// synchronizable copy in iCloud Keychain. The secret is only ever returned by `load`;
-/// it is never logged or surfaced elsewhere.
+/// sync. When the owner turns iCloud sync on, `ICloudSync` keeps a sealed copy in
+/// iCloud, readable only with a key in iCloud Keychain. The secret is only ever returned
+/// by `load`; it is never logged or surfaced elsewhere.
 struct KeychainCredentialStore {
     let service: String
 
