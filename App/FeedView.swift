@@ -343,23 +343,7 @@ struct FeedView: View {
             path = [store.entry(id: card)?.id ?? card]
             Task { await store.load() }
         }
-        .confirmationDialog(
-            store.confirming?.entry.confirm ?? "",
-            isPresented: Binding(get: { store.confirming != nil }, set: { if !$0 { store.confirming = nil } }),
-            titleVisibility: .visible,
-            presenting: store.confirming
-        ) { choice in
-            Button(choice.action?.label ?? "Send", role: choice.action?.isDestructive == true ? .destructive : nil) {
-                Task { await store.send(choice) }
-            }
-            Button("Cancel", role: .cancel) {}
-        }
-        .alert("Couldn't send",
-               isPresented: Binding(get: { store.failure != nil }, set: { if !$0 { store.failure = nil } })) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(verbatim: store.failure ?? "")
-        }
+        .modifier(FeedAnswerPrompts(shown: path.isEmpty))
         .task { await store.load() }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             Task { await store.load() }
@@ -597,6 +581,37 @@ struct FeedView: View {
         }
         .padding(24)
         .frame(maxWidth: .infinity)
+    }
+}
+
+/// An answer's `confirm` question and its "Couldn't send" alert. The timeline shows them
+/// while no card is open, and an open card's page shows its own: in the split layout (iPad,
+/// Mac) what the timeline presents does not appear while a page covers it, so from an open
+/// card a failed answer said nothing and a card with a `confirm` question could not be answered.
+private struct FeedAnswerPrompts: ViewModifier {
+    @ObservedObject private var store = FeedStore.shared
+    /// False on the timeline while a card's page is open, so one view presents at a time.
+    let shown: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .confirmationDialog(
+                store.confirming?.entry.confirm ?? "",
+                isPresented: Binding(get: { shown && store.confirming != nil }, set: { if !$0 { store.confirming = nil } }),
+                titleVisibility: .visible,
+                presenting: store.confirming
+            ) { choice in
+                Button(choice.action?.label ?? "Send", role: choice.action?.isDestructive == true ? .destructive : nil) {
+                    Task { await store.send(choice) }
+                }
+                Button("Cancel", role: .cancel) {}
+            }
+            .alert("Couldn't send",
+                   isPresented: Binding(get: { shown && store.failure != nil }, set: { if !$0 { store.failure = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(verbatim: store.failure ?? "")
+            }
     }
 }
 
@@ -853,6 +868,7 @@ struct FeedReaderView: View {
                 }
             }
         }
+        .modifier(FeedAnswerPrompts(shown: true))
         .onAppear { if let entry { store.setRead([entry], true) } }
         .onChange(of: store.answered) { _, answered in
             guard let answered, answered.id == entry?.id else { return }
