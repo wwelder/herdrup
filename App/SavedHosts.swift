@@ -195,6 +195,33 @@ final class SavedHostsStore: ObservableObject {
         return true
     }
 
+    /// The secret this device holds for `host`, whichever kind it is.
+    func secret(for host: SavedHost) -> String? {
+        host.auth == .key ? key(for: host) : password(for: host)
+    }
+
+    /// Replaces every saved machine with `machines` (iCloud's copy, see `ICloudSync`). Secrets
+    /// are written first, as in `add`: if one does not stick, the list is left as it was.
+    @discardableResult
+    func replaceAll(_ machines: [(host: SavedHost, secret: String?)]) -> Bool {
+        for machine in machines {
+            let id = machine.host.id.uuidString
+            let (kept, other) = machine.host.auth == .key ? (keychain, passwordKeychain) : (passwordKeychain, keychain)
+            if let secret = machine.secret {
+                guard kept.save(account: id, secret: secret) else { return false }
+            }
+            _ = other.delete(account: id)
+        }
+        let keep = Set(machines.map(\.host.id))
+        for old in hosts where !keep.contains(old.id) {
+            _ = keychain.delete(account: old.id.uuidString)
+            _ = passwordKeychain.delete(account: old.id.uuidString)
+        }
+        hosts = machines.map(\.host)
+        persist()
+        return true
+    }
+
     private func persist() {
         guard let data = try? JSONEncoder().encode(hosts) else { return }
         ShareStorage.defaults.set(data, forKey: defaultsKey)
@@ -205,9 +232,10 @@ final class SavedHostsStore: ObservableObject {
 /// `KeychainHostKeyPolicy`'s storage discipline — checked statuses, update-in-place
 /// rather than delete-then-add — but is its own service and uses
 /// `WhenUnlockedThisDeviceOnly`: a private key is more sensitive than a host-key
-/// pin, so it is reachable only while the device is unlocked and NEVER syncs to
-/// iCloud or another device. The secret is only ever returned by `load`; it is
-/// never logged or surfaced elsewhere.
+/// pin, so it is reachable only while the device is unlocked, and these items never
+/// sync. When the owner turns iCloud sync on, `ICloudSync` keeps a separate,
+/// synchronizable copy in iCloud Keychain. The secret is only ever returned by `load`;
+/// it is never logged or surfaced elsewhere.
 struct KeychainCredentialStore {
     let service: String
 

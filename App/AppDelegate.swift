@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        ICloudSync.shared.start()
         // A cold launch FROM a notification tap is delivered to `userNotificationCenter(_:didReceive:)`
         // as well (the delegate is set above, synchronously, before the launch tap is dispatched), so
         // we do NOT also read launchOptions[.remoteNotification] here — that would deep-link the same

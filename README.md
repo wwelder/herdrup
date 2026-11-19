@@ -120,6 +120,14 @@ herdr's JSON API exposes both, so panes and agents become real UI objects instea
   The sheet uses each machine's remembered herdr session, including named sessions.
   Federated agents use readable machine names. Send stays above the keyboard while you
   search recipients or type a message.
+- **iCloud sync** — off until you turn it on (the connect screen, or Settings → Machines), per
+  device. The machines you pair are then kept in iCloud with their keys and passwords, so
+  another of your devices can connect without pairing again: the list in iCloud key-value
+  storage, each key or password in iCloud Keychain (end-to-end encrypted), never in the list. A
+  new device takes iCloud's machines; after that a change on one device goes to the others. When
+  this device and iCloud both changed since they last agreed, the app asks: upload (this device
+  replaces iCloud) or download (iCloud replaces this device). Host-key pins and the Gram and
+  Feed machine choices are not synced.
 - **Guest access** — share one agent with someone outside your machines from its ••• menu. They
   get a one-use invite (QR code or link), watch the live terminal and message the agent through
   a relay, end to end encrypted, with every message labelled `<name> (via HerdrUp):`. Settings →
