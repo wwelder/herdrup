@@ -486,14 +486,22 @@ struct FeedView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        .modifier(NoTopScrollEdgeEffect())
         .refreshable { store.settle(); await store.load() }
     }
 
+    /// Fills its row with the ground, so a pinned header covers the rows passing under it
+    /// (the system's own backdrop for it is off: `NoTopScrollEdgeEffect`).
     private func sectionHeader(_ title: String, tint: Color) -> some View {
         Text(verbatim: title)
             .font(Typography.app(13, .semibold))
             .foregroundStyle(tint)
             .textCase(nil)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Palette.ground)
+            .listRowInsets(EdgeInsets())
     }
 
     private func row(_ entry: FeedEntry) -> some View {
@@ -580,6 +588,20 @@ struct FeedView: View {
         }
         .padding(24)
         .frame(maxWidth: .infinity)
+    }
+}
+
+/// Turns off the list's top scroll edge effect, which iOS 26 draws behind a pinned section
+/// header. Every section header on screen joins that effect, and on a Mac it is sized to reach
+/// the lowest of them, so it blurred every card above that header. The headers carry their
+/// own ground instead.
+private struct NoTopScrollEdgeEffect: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.scrollEdgeEffectHidden(true, for: .top)
+        } else {
+            content
+        }
     }
 }
 
