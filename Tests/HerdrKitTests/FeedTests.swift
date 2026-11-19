@@ -63,6 +63,14 @@ final class FeedTests: XCTestCase {
         XCTAssertThrowsError(try FeedCards.entry(FeedCardFile(source: "a", id: "b", card: nil, error: "too big")))
     }
 
+    func testAnAnsweredCardHandsOverToTheNextWaitingOne() throws {
+        let waiting = try ["a", "b", "c"].map { try FeedCards.entry(FeedCardFile(source: "kg", id: $0, card: question)) }
+        XCTAssertEqual(FeedCards.next(after: "kg/a", in: waiting)?.cardID, "b")
+        XCTAssertEqual(FeedCards.next(after: "kg/c", in: waiting)?.cardID, "a", "after the last, the first")
+        XCTAssertEqual(FeedCards.next(after: "kg/x", in: waiting)?.cardID, "a", "a card outside the list: the first")
+        XCTAssertNil(FeedCards.next(after: "kg/a", in: [waiting[0]]), "no other card waits")
+    }
+
     func testNewestFirstKeepsUndatedCardsLast() throws {
         let cards = try [#"{"title":"u"}"#, #"{"title":"old","date":"2026-11-03T07:00:00Z"}"#,
                          #"{"title":"new","date":"2026-11-04T07:00:00Z"}"#]

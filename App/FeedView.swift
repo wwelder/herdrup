@@ -56,6 +56,13 @@ final class FeedStore: ObservableObject {
     @Published var confirming: Choice?
     /// A card to open in the reader, from a tapped question push.
     @Published var opening: String?
+    /// The card whose answer was just sent, and the next one that waits for the owner (nil
+    /// when none does): the reader showing the answered card moves on.
+    struct Answered: Equatable {
+        let id: String
+        let next: String?
+    }
+    @Published var answered: Answered?
     @Published var failure: String?
 
     // ponytail: the newest 3000 read marks; older ones fall off and would show unread again.
@@ -263,11 +270,13 @@ final class FeedStore: ObservableObject {
             let output = try await client.feedAct(source: entry.source, id: entry.cardID,
                                                   action: choice.action?.id, text: choice.text)
             generation += 1
+            let next = FeedCards.next(after: entry.id, in: pending)?.id
             if let index = entries.firstIndex(where: { $0.id == entry.id }) {
                 entries[index].reply = FeedReply(action: choice.action?.id, text: choice.text, at: Date())
             }
             outputs[entry.id] = output
             setRead([entry], true)
+            answered = Answered(id: entry.id, next: next)
         } catch let error as APIError {
             failure = error.message
         } catch {
@@ -785,9 +794,11 @@ private struct FeedRow: View {
 
 /// One card, full screen: its markdown body, and for a question the answer bar (text field
 /// and buttons) at the bottom. Star and up/down to the neighbouring cards are in the bottom
-/// bar. Opening it marks it read.
+/// bar. Opening it marks it read. Once its answer is sent it shows the next card that waits
+/// for the owner, or goes back to the timeline when none does.
 struct FeedReaderView: View {
     @ObservedObject private var store = FeedStore.shared
+    @Environment(\.dismiss) private var dismiss
     @State private var entryID: String
     @State private var text = ""
     @FocusState private var typing: Bool
@@ -843,6 +854,15 @@ struct FeedReaderView: View {
             }
         }
         .onAppear { if let entry { store.setRead([entry], true) } }
+        .onChange(of: store.answered) { _, answered in
+            guard let answered, answered.id == entry?.id else { return }
+            store.answered = nil
+            if let next = answered.next.flatMap({ store.entry(id: $0) }) {
+                show(next)
+            } else {
+                dismiss()
+            }
+        }
     }
 
     private func article(_ entry: FeedEntry) -> some View {
@@ -929,7 +949,10 @@ struct FeedReaderView: View {
 
     private func move(_ list: [FeedEntry], _ index: Int?, _ delta: Int) {
         guard let index, list.indices.contains(index + delta) else { return }
-        let next = list[index + delta]
+        show(list[index + delta])
+    }
+
+    private func show(_ next: FeedEntry) {
         entryID = next.id
         text = ""
         store.setRead([next], true)
