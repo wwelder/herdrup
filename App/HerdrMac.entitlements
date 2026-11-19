@@ -9,7 +9,10 @@
 	<!-- herdr is reached over SSH, the push relay over HTTPS: outgoing connections only. -->
 	<key>com.apple.security.network.client</key>
 	<true/>
-	<!-- Dictation. -->
+	<!-- Dictation. The App Sandbox's own key is `device.microphone`; `device.audio-input` is the
+	     Hardened Runtime's, kept for a build that turns that on. -->
+	<key>com.apple.security.device.microphone</key>
+	<true/>
 	<key>com.apple.security.device.audio-input</key>
 	<true/>
 	<!-- The pairing code scanner. -->
