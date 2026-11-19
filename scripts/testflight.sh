@@ -24,7 +24,9 @@
 # PLATFORM=mac archives the same scheme for Mac Catalyst and exports a .pkg. The app record
 # needs its macOS platform added in App Store Connect first. Automatic signing also needs one
 # Mac registered on the team to make the Mac Catalyst profile: on a team that has none, run
-# once with REGISTER_DEVICE=1, which lets Xcode register THIS Mac as a development device.
+# once with REGISTER_DEVICE=1. That first does a signed Debug build for THIS Mac, which is what
+# makes Xcode register it as a development device (an archive does not, with or without
+# -allowProvisioningDeviceRegistration).
 #
 # Upload requires the App Store Connect app record for inc.simcast.herdrup to exist.
 set -euo pipefail
@@ -39,12 +41,6 @@ case "$PLATFORM" in
   mac) DESTINATION='generic/platform=macOS,variant=Mac Catalyst'; ARCHIVE="$BUILD_DIR/HerdrMac.xcarchive"; EXPORT_DIR="$BUILD_DIR/export-mac" ;;
   *) echo "error: PLATFORM must be ios or mac, not '$PLATFORM'" >&2; exit 1 ;;
 esac
-REGISTER=()
-if [ "${REGISTER_DEVICE:-0}" = "1" ]; then
-  REGISTER=(-allowProvisioningDeviceRegistration)
-  # Xcode registers the destination device, and a generic destination has none: name this Mac.
-  [ "$PLATFORM" = "mac" ] && DESTINATION='platform=macOS,variant=Mac Catalyst'
-fi
 UPLOAD="${TESTFLIGHT_UPLOAD:-0}"
 
 # Each TestFlight build needs a unique, monotonic build number. Default to a
@@ -61,6 +57,17 @@ for plist in App/Info.plist HerdrWidgets/Info.plist HerdrNotificationService/Inf
     || /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $BUILD_NUMBER" "$plist"
 done
 
+if [ "$PLATFORM" = "mac" ] && [ "${REGISTER_DEVICE:-0}" = "1" ]; then
+  echo "==> register this Mac (a signed Debug build for it)"
+  xcodebuild build \
+    -project Herdr.xcodeproj \
+    -scheme "$SCHEME" \
+    -configuration Debug \
+    -destination "platform=macOS,arch=$(uname -m),variant=Mac Catalyst" \
+    -derivedDataPath "$BUILD_DIR/register-mac" \
+    -allowProvisioningUpdates -allowProvisioningDeviceRegistration
+fi
+
 echo "==> archive ($PLATFORM, $CONFIG, build $BUILD_NUMBER)"
 xcodebuild archive \
   -project Herdr.xcodeproj \
@@ -69,7 +76,7 @@ xcodebuild archive \
   -destination "$DESTINATION" \
   -archivePath "$ARCHIVE" \
   CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
-  -allowProvisioningUpdates ${REGISTER[@]+"${REGISTER[@]}"}
+  -allowProvisioningUpdates
 
 if [ "$UPLOAD" = "1" ]; then
   echo "==> export + upload via the signed-in Xcode account"
