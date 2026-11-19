@@ -35,7 +35,8 @@ run cannot read them): `DIST_CERT_P12_BASE64`, `DIST_CERT_PASSWORD`,
 
 `PLATFORM=mac TESTFLIGHT_UPLOAD=1 scripts/testflight.sh` archives the same scheme for Mac
 Catalyst and uploads a `.pkg` through the Mac's signed-in Xcode account. The app record needs
-its macOS platform in App Store Connect. The Mac build signs with `App/HerdrMac.entitlements`
+its macOS platform in App Store Connect, and the team needs one registered Mac for the Mac
+Catalyst profile (`REGISTER_DEVICE=1` once registers the Mac the script runs on). The Mac build signs with `App/HerdrMac.entitlements`
 (the iOS entitlements plus the App Sandbox with outgoing network, microphone, camera and
 user-selected files) and carries no extensions. The GitHub Actions lane above builds iOS only.
 

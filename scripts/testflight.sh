@@ -22,7 +22,9 @@
 #   PLATFORM=mac TESTFLIGHT_UPLOAD=1 scripts/testflight.sh   # the Mac build (Mac Catalyst)
 #
 # PLATFORM=mac archives the same scheme for Mac Catalyst and exports a .pkg. The app record
-# needs its macOS platform added in App Store Connect first.
+# needs its macOS platform added in App Store Connect first. Automatic signing also needs one
+# Mac registered on the team to make the Mac Catalyst profile: on a team that has none, run
+# once with REGISTER_DEVICE=1, which lets Xcode register THIS Mac as a development device.
 #
 # Upload requires the App Store Connect app record for inc.simcast.herdrup to exist.
 set -euo pipefail
@@ -37,6 +39,8 @@ case "$PLATFORM" in
   mac) DESTINATION='generic/platform=macOS,variant=Mac Catalyst'; ARCHIVE="$BUILD_DIR/HerdrMac.xcarchive"; EXPORT_DIR="$BUILD_DIR/export-mac" ;;
   *) echo "error: PLATFORM must be ios or mac, not '$PLATFORM'" >&2; exit 1 ;;
 esac
+REGISTER=()
+[ "${REGISTER_DEVICE:-0}" = "1" ] && REGISTER=(-allowProvisioningDeviceRegistration)
 UPLOAD="${TESTFLIGHT_UPLOAD:-0}"
 
 # Each TestFlight build needs a unique, monotonic build number. Default to a
@@ -61,7 +65,7 @@ xcodebuild archive \
   -destination "$DESTINATION" \
   -archivePath "$ARCHIVE" \
   CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
-  -allowProvisioningUpdates
+  -allowProvisioningUpdates ${REGISTER[@]+"${REGISTER[@]}"}
 
 if [ "$UPLOAD" = "1" ]; then
   echo "==> export + upload via the signed-in Xcode account"
