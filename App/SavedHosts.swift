@@ -79,6 +79,11 @@ final class SavedHostsStore: ObservableObject {
         guard parts.count == 4,
               !hosts.contains(where: { $0.host == parts[2] && $0.username == parts[1] }),
               let key = try? String(contentsOfFile: parts[3], encoding: .utf8) else { return }
+        // `HERDR_DEBUG_SEED_PIN=<fingerprint>` also pins that host key first, as pairing does:
+        // for the iCloud sync test, whose machines are never dialled.
+        if let pin = ProcessInfo.processInfo.environment["HERDR_DEBUG_SEED_PIN"], let endpoint = HostEndpoint.parse(parts[2]) {
+            KeychainHostKeyPolicy.shared.pin(host: endpoint.host, port: endpoint.port, fingerprint: pin)
+        }
         add(nickname: parts[0], host: parts[2], username: parts[1], secret: .key(key))
     }
     #endif

@@ -9,8 +9,10 @@ import UIKit
 // other devices once they have synced. iCloud's copy is ONE value in iCloud key-value storage:
 // the list in the clear, and every machine's private key or password sealed (AES-GCM) with a
 // key that exists only in iCloud Keychain, which is end to end encrypted. One value, written in
-// one go, so the list and its secrets cannot disagree. It is off until the owner turns it on,
-// per device.
+// one go, so the list and its secrets cannot disagree. Sealed with each secret is the SSH host
+// key its device has pinned, and a device takes a secret only together with that pin, so a
+// synced credential is never offered to a host nobody verified. It is off until the owner turns
+// it on, per device.
 
 /// iCloud's copy of the saved machines.
 struct CloudMachines: Codable, Equatable {
@@ -24,8 +26,8 @@ struct CloudMachines: Codable, Equatable {
     var hosts: [SavedHost]
     /// Which sealing key `sealed` was made with (`CloudSeal.id`).
     var keyID: String
-    /// The machines' secrets by machine id, sealed. A machine whose device held no secret has
-    /// no entry.
+    /// What is sealed for each machine, by machine id (`CloudSeal.Entry`): its secret and the
+    /// SSH host key the uploading device has pinned for it.
     var sealed: Data
     /// The device that uploaded it, for the conflict question.
     var device: String
@@ -42,6 +44,21 @@ struct CloudMachines: Codable, Equatable {
 
 /// Sealing the secrets with a 256-bit key, and opening them.
 enum CloudSeal {
+    /// One machine's sealed part. The host-key pin travels with the credential because a
+    /// device that received only the credential would trust whatever key it met on its first
+    /// connection, and hand a password to whoever answered.
+    struct Entry: Codable, Equatable {
+        var secret: String?
+        /// The SSH host-key fingerprint the uploading device has pinned for `pinnedHost`.
+        var pin: String?
+        /// The machine's address (`SavedHost.host`) the pin was read for. A pin counts only
+        /// while the machine still has that address.
+        var pinnedHost: String?
+
+        /// The pin, if it belongs to `host`'s current address.
+        func pin(for host: SavedHost) -> String? { pinnedHost == host.host ? pin : nil }
+    }
+
     static func newKey() -> Data { SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) } }
 
     /// Names a key without giving it away.
@@ -49,15 +66,15 @@ enum CloudSeal {
         SHA256.hash(data: key).prefix(8).map { String(format: "%02x", $0) }.joined()
     }
 
-    static func seal(_ secrets: [String: String], with key: Data) -> Data? {
+    static func seal(_ secrets: [String: Entry], with key: Data) -> Data? {
         guard let plain = try? JSONEncoder().encode(secrets) else { return nil }
         return try? AES.GCM.seal(plain, using: SymmetricKey(data: key)).combined
     }
 
-    static func open(_ sealed: Data, with key: Data) -> [String: String]? {
+    static func open(_ sealed: Data, with key: Data) -> [String: Entry]? {
         guard let box = try? AES.GCM.SealedBox(combined: sealed),
               let plain = try? AES.GCM.open(box, using: SymmetricKey(data: key)) else { return nil }
-        return try? JSONDecoder().decode([String: String].self, from: plain)
+        return try? JSONDecoder().decode([String: Entry].self, from: plain)
     }
 }
 
@@ -200,6 +217,9 @@ final class ICloudSync: ObservableObject {
     @Published var choosing = false
     /// iCloud's copy as last read, for the conflict question.
     @Published private(set) var cloud: CloudMachines?
+    /// Machines in the last download whose credential was not taken, because iCloud's copy
+    /// had no verified host key for them.
+    @Published private(set) var withheld = 0
     @Published var enabled: Bool {
         didSet {
             guard enabled != oldValue else { return }
@@ -217,6 +237,7 @@ final class ICloudSync: ObservableObject {
 
     private let store: CloudMachineStore
     private let hosts = SavedHostsStore.shared
+    private let pins = KeychainHostKeyPolicy.shared
     private let defaults = UserDefaults.standard
     private var watching: AnyCancellable?
     private var retry: Task<Void, Never>?
@@ -234,7 +255,7 @@ final class ICloudSync: ObservableObject {
     }
 
     /// Once, at launch: syncs now, whenever another device changes iCloud's copy, whenever the
-    /// machines change here, and when the app comes back to the front.
+    /// machines or a pinned host key change here, and when the app comes back to the front.
     func start() {
         guard !started else { return }
         started = true
@@ -243,8 +264,10 @@ final class ICloudSync: ObservableObject {
             // The store publishes before it has written; look after it has.
             DispatchQueue.main.async { self?.sync() }
         }
-        NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.sync() }
+        for name in [UIApplication.didBecomeActiveNotification, KeychainHostKeyPolicy.pinned] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.sync() }
+            }
         }
         sync()
     }
@@ -315,10 +338,25 @@ final class ICloudSync: ObservableObject {
         }
     }
 
-    /// The secrets in `cloud`, or nil while iCloud Keychain has not delivered the key they are
-    /// sealed with.
-    private func open(_ cloud: CloudMachines) -> [String: String]? {
+    /// What is sealed in `cloud`, or nil while iCloud Keychain has not delivered its key.
+    private func open(_ cloud: CloudMachines) -> [String: CloudSeal.Entry]? {
         store.key(cloud.keyID).flatMap { CloudSeal.open(cloud.sealed, with: $0) }
+    }
+
+    /// The host key this device has pinned for the machine's address.
+    private func pin(for host: SavedHost) -> String? {
+        HostEndpoint.parse(host.host).flatMap { pins.fingerprint(host: $0.host, port: $0.port) }
+    }
+
+    /// The machine's secret from iCloud's copy, once the host key that came with it is pinned
+    /// (a pin this device already has stays). Nil when the copy has no verified host key for
+    /// the machine's address: a credential is never taken without one, or this device's first
+    /// connection would trust whatever key it met and hand the credential to it.
+    private func accept(_ entry: CloudSeal.Entry?, for host: SavedHost) -> String? {
+        guard let entry, let secret = entry.secret, let pin = entry.pin(for: host),
+              let endpoint = HostEndpoint.parse(host.host),
+              pins.pinIfAbsent(host: endpoint.host, port: endpoint.port, fingerprint: pin) else { return nil }
+        return secret
     }
 
     /// False while this device lacks a secret iCloud's copy may hold and the copy cannot be
@@ -327,12 +365,12 @@ final class ICloudSync: ObservableObject {
         // Only for the same machine with the same kind of credential; a machine iCloud
         // describes differently is settled by the upload or download that follows.
         let missing = hosts.hosts.filter { host in
-            hosts.secret(for: host) == nil && cloud.hosts.first(where: { $0.id == host.id })?.auth == host.auth
+            hosts.secret(for: host) == nil && cloud.hosts.first(where: { $0.id == host.id }).map { $0.auth == host.auth && $0.host == host.host } == true
         }
         guard !missing.isEmpty else { return true }
-        guard let secrets = open(cloud) else { return false }
+        guard let entries = open(cloud) else { return false }
         for host in missing {
-            if let secret = secrets[host.id.uuidString] { hosts.restoreSecret(secret, for: host) }
+            if let secret = accept(entries[host.id.uuidString], for: host) { hosts.restoreSecret(secret, for: host) }
         }
         return true
     }
@@ -359,14 +397,19 @@ final class ICloudSync: ObservableObject {
             key = fresh
         }
         guard let key else { status = .failed; return }
-        var secrets: [String: String] = [:]
+        var entries: [String: CloudSeal.Entry] = [:]
         for host in hosts.hosts {
             let id = host.id.uuidString
-            // A machine this device holds no secret for keeps the one iCloud has: uploading
-            // must never take a secret away.
-            if let secret = hosts.secret(for: host) ?? known?[id] { secrets[id] = secret }
+            let old = known?[id]
+            // What this device does not hold, the secret or the pin, stays as iCloud has it:
+            // uploading must never take either away.
+            let secret = hosts.secret(for: host) ?? old?.secret
+            let pin = pin(for: host) ?? old?.pin(for: host)
+            if secret != nil || pin != nil {
+                entries[id] = CloudSeal.Entry(secret: secret, pin: pin, pinnedHost: pin == nil ? nil : host.host)
+            }
         }
-        guard let sealed = CloudSeal.seal(secrets, with: key) else { status = .failed; return }
+        guard let sealed = CloudSeal.seal(entries, with: key) else { status = .failed; return }
         let copy = CloudMachines(revision: UUID().uuidString, ancestors: CloudMachines.ancestry(after: before),
                                  hosts: hosts.hosts, keyID: CloudSeal.id(key), sealed: sealed,
                                  device: UIDevice.current.name, updatedAt: Date())
@@ -374,24 +417,32 @@ final class ICloudSync: ObservableObject {
         guard store.save(copy) else { status = .failed; return }
         defaults.removeObject(forKey: Self.pendingKey)
         cloud = copy
+        withheld = 0
         remember(copy.revision, uploadedHere: true)
         status = .uploaded(copy.hosts.count)
     }
 
     private func download(_ cloud: CloudMachines) {
         // The copy arrives faster than iCloud Keychain delivers the key it is sealed with.
-        guard let secrets = open(cloud) else {
+        guard let entries = open(cloud) else {
             status = .waitingForKeys
             waitForKeys()
             return
         }
-        let machines = cloud.hosts.map { (host: $0, secret: secrets[$0.id.uuidString]) }
+        var skipped = 0
+        let machines: [(host: SavedHost, secret: String?)] = cloud.hosts.map { host in
+            let entry = entries[host.id.uuidString]
+            let secret = accept(entry, for: host)
+            if secret == nil, entry?.secret != nil { skipped += 1 }
+            return (host, secret)
+        }
         retry?.cancel()
         applying = true
         let replaced = hosts.replaceAll(machines)
         applying = false
         guard replaced else { status = .failed; return }
         defaults.removeObject(forKey: Self.pendingKey)
+        withheld = skipped
         remember(cloud.revision, uploadedHere: false)
         status = .downloaded(cloud.hosts.count)
     }
@@ -427,6 +478,9 @@ final class ICloudSync: ObservableObject {
         for host in hosts.hosts {
             hasher.update(data: (try? encoder.encode(host)) ?? Data())
             hasher.update(data: Data((hosts.secret(for: host) ?? "").utf8))
+            // A host key pinned by the first connection is a change worth uploading: the
+            // other devices only take the credential together with it.
+            hasher.update(data: Data((pin(for: host) ?? "").utf8))
         }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
@@ -492,7 +546,10 @@ struct ICloudSyncSection: View {
         case .unavailable: return "Sign in to iCloud on this device to sync."
         case .upToDate: return "Up to date."
         case .uploaded(let machines): return "Uploaded \(count(machines)) to iCloud."
-        case .downloaded(let machines): return "Downloaded \(count(machines)) from iCloud."
+        case .downloaded(let machines):
+            guard sync.withheld > 0 else { return "Downloaded \(count(machines)) from iCloud." }
+            // ponytail: the note is not kept across launches; persist `withheld` if it is missed.
+            return "Downloaded \(count(machines)) from iCloud. \(sync.withheld == 1 ? "One has" : "\(sync.withheld) have") no verified host key yet, so no key or password was taken for \(sync.withheld == 1 ? "it" : "them"). Connect once on the device \(sync.withheld == 1 ? "it was" : "they were") added on."
         case .nothingInCloud:
             return "iCloud shows no machines yet. If another device has already uploaded, wait a moment; otherwise upload this device's \(count(hosts.hosts.count))."
         case .waitingForKeys: return "Waiting for iCloud Keychain to deliver the encryption key. iCloud Keychain has to be on."
