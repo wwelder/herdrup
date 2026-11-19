@@ -1,5 +1,7 @@
 import Foundation
+#if !targetEnvironment(macCatalyst)
 import ActivityKit
+#endif
 
 /// The shape of the Herdr agent-session Live Activity — shared verbatim by the app
 /// (which starts / updates / ends it) and the widget extension (which renders it).
@@ -14,7 +16,7 @@ import ActivityKit
 /// `ContentState` summarises the session's agents: a representative *headline* agent
 /// (the highest-priority one — something that needs you outranks something merely
 /// working, which outranks idle) plus counts, so the surface can say "2 need you".
-struct AgentActivityAttributes: ActivityAttributes {
+struct AgentActivityAttributes {
     typealias ContentState = State
 
     /// Fixed for the life of the activity: which machine this session is on
@@ -27,3 +29,8 @@ struct AgentActivityAttributes: ActivityAttributes {
     typealias State = AgentActivityState
     typealias Status = AgentActivityStatus
 }
+
+#if !targetEnvironment(macCatalyst)
+// ActivityKit is unavailable in Mac Catalyst: the Mac build keeps the plain value type.
+extension AgentActivityAttributes: ActivityAttributes {}
+#endif

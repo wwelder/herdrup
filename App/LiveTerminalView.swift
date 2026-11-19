@@ -3792,7 +3792,7 @@ struct LiveTerminalView: UIViewRepresentable {
         /// Accumulated vertical drag since the last emitted scroll tick.
         private var scrollAccum: CGFloat = 0
         /// Running as "Designed for iPad" on a Mac, where scrolling is trackpad/wheel input.
-        static let indirectScrollInput = ProcessInfo.processInfo.isiOSAppOnMac
+        static let indirectScrollInput = ProcessInfo.processInfo.isOnMac
         /// The alt-screen scroll pan recognizer, disabled on teardown so a drag can't
         /// send bytes to a pane that has exited/been replaced.
         private var scrollPan: UIPanGestureRecognizer?

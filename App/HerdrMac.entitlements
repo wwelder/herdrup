@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The Mac build (Mac Catalyst): App/Herdr.entitlements plus the App Sandbox, which the
+	     Mac App Store and TestFlight require. Used only for sdk=macosx (see project.yml). -->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<!-- herdr is reached over SSH, the push relay over HTTPS: outgoing connections only. -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<!-- Dictation. The App Sandbox's own key is `device.microphone`; `device.audio-input` is the
+	     Hardened Runtime's, kept for a build that turns that on. -->
+	<key>com.apple.security.device.microphone</key>
+	<true/>
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+	<!-- The pairing code scanner. -->
+	<key>com.apple.security.device.camera</key>
+	<true/>
+	<!-- Attaching a file the owner picks, and Save to Files. -->
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+	<!-- The same four as the iOS app. macOS names the APNs entitlement differently. -->
+	<key>com.apple.developer.aps-environment</key>
+	<string>$(APS_ENVIRONMENT)</string>
+	<key>com.apple.developer.usernotifications.time-sensitive</key>
+	<true/>
+	<key>com.apple.security.application-groups</key>
+	<array><string>group.inc.simcast.herdrup</string></array>
+	<key>keychain-access-groups</key>
+	<array><string>$(AppIdentifierPrefix)inc.simcast.herdrup</string></array>
+</dict>
+</plist>

@@ -1,6 +1,12 @@
 import SwiftUI
 import HerdrKit
 
+extension ProcessInfo {
+    /// The app runs on a Mac: as its Mac build (Mac Catalyst), or as the iOS app that macOS
+    /// runs unchanged (Designed for iPad). Both draw through the same UIKit-on-Mac runtime.
+    var isOnMac: Bool { isiOSAppOnMac || isMacCatalystApp }
+}
+
 // Design tokens for herdr mobile, taken from the Claude Design kit
 // (herdr mobile.dc.html + DESIGN-BRIEF.md). The brief's rules are load-bearing:
 // deep desaturated navy ground (never black); colour is MEANING, not decoration

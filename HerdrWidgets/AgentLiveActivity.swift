@@ -1,5 +1,6 @@
 import SwiftUI
 import WidgetKit
+#if !targetEnvironment(macCatalyst)
 import ActivityKit
 
 struct AgentLiveActivity: Widget {
@@ -57,6 +58,7 @@ struct AgentLiveActivity: Widget {
         }
     }
 }
+#endif
 
 /// The owner's compact island: APM on the left, and on the right the running count, or
 /// the blocked count once anything is blocked. Both turn amber while anything is blocked.

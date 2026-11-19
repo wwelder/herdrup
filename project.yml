@@ -128,6 +128,7 @@ targets:
       # ActivityKit backs the agent-session Live Activity (#90) — `LiveActivityController`
       # starts/updates/ends it. Linked explicitly for the same reason as the others.
       - sdk: ActivityKit.framework
+        platformFilter: iOS
       # Network backs the typing-latency diagnostics' Wi-Fi/cellular label
       # (`TypingLatencyContext`, NWPathMonitor). Linked explicitly like the others.
       - sdk: Network.framework
@@ -136,10 +137,13 @@ targets:
       # the extension). INERT for the buildbox sim build's signing (never signed); the
       # Distribution archive needs the widget's own App Store profile — see testflight.yml.
       - target: HerdrWidgets
+        platformFilter: iOS
       # The notification service extension that adds answer buttons to question pushes
       # (#483), embedded in PlugIns the same way.
       - target: HerdrNotificationService
+        platformFilter: iOS
       - target: HerdrShareExtension
+        platformFilter: iOS
     # Add the UI-test bundle to the auto-generated `Herdr` scheme's TEST action, so
     # `xcodebuild test -scheme Herdr -only-testing:HerdrUITests` runs it. This does NOT
     # touch the scheme's build/archive action, so the TestFlight lane (`-scheme Herdr`
@@ -204,6 +208,8 @@ targets:
         # SPECIALIST HAS REVIEWED IT and nothing here is a specialist opinion. The
         # value below is unchanged by that confirmation.
         ITSAppUsesNonExemptEncryption: false
+        # The Mac App Store asks for a category; iOS ignores the key.
+        LSApplicationCategoryType: public.app-category.developer-tools
         # Bundled design fonts (App/Fonts/, added as resources by xcodegen). Geist is
         # the APP voice, IBM Plex Mono the MACHINE voice — the two families the Claude
         # Design spec (herdr mobile.dc.html) is set in. Nerd Fonts' monospaced symbols
@@ -237,11 +243,19 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: inc.simcast.herdrup
+        # The app also builds as a Mac app (Mac Catalyst) under the same bundle id, with the Mac's
+        # own interface (device family 6: drawn 1:1, not as an iPad scaled to 77%). ActivityKit
+        # and the three extensions above are iOS-only (`platformFilter: iOS`), so the Mac build
+        # has no Live Activity, widgets, notification service or share extension.
+        SUPPORTS_MACCATALYST: YES
+        DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER: NO
+        # The Mac App Store and TestFlight require the App Sandbox: App/HerdrMac.entitlements.
+        "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": App/HerdrMac.entitlements
         MARKETING_VERSION: "1.2.1"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.9"
         GENERATE_INFOPLIST_FILE: NO
-        TARGETED_DEVICE_FAMILY: "1,2"
+        TARGETED_DEVICE_FAMILY: "1,2,6"
         # Run on Apple Silicon Macs as a "Designed for iPad" app (install on macOS).
         # The unchanged iOS binary runs under the Mac's iOS runtime — no Catalyst
         # recompile.

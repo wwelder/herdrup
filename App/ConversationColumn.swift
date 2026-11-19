@@ -142,7 +142,7 @@ private struct ConversationColumnResizer: View {
     @State private var lastTap: (edge: ConversationColumnWidth.Edge, at: Date)?
 
     /// The Mac: a pointer, so a narrower hit band and nothing drawn at rest.
-    private static let onMac = ProcessInfo.processInfo.isiOSAppOnMac
+    private static let onMac = ProcessInfo.processInfo.isOnMac
     private static let hitWidth: CGFloat = onMac ? 20 : 44
     private static let doubleTapInterval: TimeInterval = 0.45
     /// A touch that moves less than this is a tap, not a drag.
