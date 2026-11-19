@@ -40,7 +40,11 @@ case "$PLATFORM" in
   *) echo "error: PLATFORM must be ios or mac, not '$PLATFORM'" >&2; exit 1 ;;
 esac
 REGISTER=()
-[ "${REGISTER_DEVICE:-0}" = "1" ] && REGISTER=(-allowProvisioningDeviceRegistration)
+if [ "${REGISTER_DEVICE:-0}" = "1" ]; then
+  REGISTER=(-allowProvisioningDeviceRegistration)
+  # Xcode registers the destination device, and a generic destination has none: name this Mac.
+  [ "$PLATFORM" = "mac" ] && DESTINATION='platform=macOS,variant=Mac Catalyst'
+fi
 UPLOAD="${TESTFLIGHT_UPLOAD:-0}"
 
 # Each TestFlight build needs a unique, monotonic build number. Default to a
