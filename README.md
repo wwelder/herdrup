@@ -58,7 +58,9 @@ herdr's JSON API exposes both, so panes and agents become real UI objects instea
   machine, whichever one is open in Agents. Until one is picked it reads every saved machine into
   one timeline, names the machine on each card, and sends an answer to the machine that owns the
   card; a machine that cannot be reached keeps its last cards and is named at the end of the
-  timeline. Only Agents is per machine.
+  timeline. Only Agents is per machine. Answering an open card moves on to the next card that
+  waits for you, and back to the timeline after the last one; an answer that could not be sent
+  stays on its card.
 - **omp Chat view** — an omp agent's page opens as a conversation read from its session file:
   your prompts as bubbles, its replies in rendered markdown, its thinking and tool steps folded
   into one expandable line, notes, the current checklist and questions you answer with a tap

@@ -123,6 +123,15 @@ public enum FeedCards {
             expires: card.expires.flatMap(parseDate), outcome: card.outcome, reply: reply, machine: machine)
     }
 
+    /// Where the owner goes once they have answered `id`, one of the `waiting` cards in the
+    /// order "Needs you" lists them: the card after it, or the first when it was the last.
+    /// Nil when no other card waits.
+    public static func next(after id: String, in waiting: [FeedEntry]) -> FeedEntry? {
+        let rest = waiting.filter { $0.id != id }
+        guard !rest.isEmpty else { return nil }
+        return rest[(waiting.firstIndex { $0.id == id } ?? 0) % rest.count]
+    }
+
     /// Newest first; undated cards last, in their given order.
     public static func newestFirst(_ entries: [FeedEntry]) -> [FeedEntry] {
         entries.enumerated().sorted { a, b in
