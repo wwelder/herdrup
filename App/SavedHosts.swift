@@ -200,6 +200,15 @@ final class SavedHostsStore: ObservableObject {
         host.auth == .key ? key(for: host) : password(for: host)
     }
 
+    /// Puts back a secret this device lost: a restore from a backup brings the machines but
+    /// not their device-only secrets (see `ICloudSync`).
+    @discardableResult
+    func restoreSecret(_ secret: String, for host: SavedHost) -> Bool {
+        let saved = (host.auth == .key ? keychain : passwordKeychain).save(account: host.id.uuidString, secret: secret)
+        if saved { objectWillChange.send() }
+        return saved
+    }
+
     /// Replaces every saved machine with `machines` (iCloud's copy, see `ICloudSync`). Secrets
     /// are written first, as in `add`: if one does not stick, the list is left as it was.
     @discardableResult

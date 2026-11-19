@@ -14,9 +14,11 @@ import UIKit
 struct CloudMachines: Codable, Equatable {
     /// A new value on every upload: how a device tells whether iCloud's copy changed.
     var revision: String
-    /// The revision the uploading device had last agreed on: tells a device whose own upload
-    /// was replaced whether the replacement had seen it.
-    var parent: String?
+    /// The revisions this copy was made on top of, oldest first (the last `ancestorLimit`).
+    /// A device whose own upload is no longer iCloud's copy looks for it here: if it is
+    /// there, the newer copy was built on it and can simply be taken; if not, the two
+    /// uploads crossed.
+    var ancestors: [String] = []
     var hosts: [SavedHost]
     /// Per machine id, the version of its secret that goes with this revision. A machine whose
     /// device held no secret has no entry.
@@ -24,6 +26,14 @@ struct CloudMachines: Codable, Equatable {
     /// The device that uploaded it, for the conflict question.
     var device: String
     var updatedAt: Date
+
+    static let ancestorLimit = 50
+
+    /// The ancestry of a copy made on top of `base` (iCloud's copy when the upload started).
+    static func ancestry(after base: CloudMachines?) -> [String] {
+        guard let base else { return [] }
+        return Array((base.ancestors + [base.revision]).suffix(ancestorLimit))
+    }
 
     /// How a store names one version of one machine's secret.
     static func secretKey(_ id: String, _ version: String) -> String { id + "|" + version }
@@ -41,8 +51,8 @@ protocol CloudMachineStore {
     /// published list always names secrets that exist.
     func secret(for id: String, version: String) -> String?
     func saveSecret(_ secret: String, for id: String, version: String) -> Bool
-    /// `keep` holds `CloudMachines.secretKey` values.
-    func deleteSecrets(except keep: Set<String>)
+    /// `keys` holds `CloudMachines.secretKey` values.
+    func deleteSecrets(_ keys: Set<String>)
     /// Calls `changed` on the main queue when another device changed the copy.
     func observe(_ changed: @escaping () -> Void)
 }
@@ -96,17 +106,8 @@ struct ICloudMachineStore: CloudMachineStore {
         return status == errSecSuccess || status == errSecDuplicateItem
     }
 
-    func deleteSecrets(except keep: Set<String>) {
-        var all = query(nil)
-        all[kSecReturnAttributes as String] = true
-        all[kSecMatchLimit as String] = kSecMatchLimitAll
-        var items: CFTypeRef?
-        guard SecItemCopyMatching(all as CFDictionary, &items) == errSecSuccess,
-              let found = items as? [[String: Any]] else { return }
-        for item in found {
-            guard let account = item[kSecAttrAccount as String] as? String, !keep.contains(account) else { continue }
-            SecItemDelete(query(account) as CFDictionary)
-        }
+    func deleteSecrets(_ keys: Set<String>) {
+        for key in keys { SecItemDelete(query(key) as CFDictionary) }
     }
 
     func observe(_ changed: @escaping () -> Void) {
@@ -146,11 +147,8 @@ struct FolderCloudStore: CloudMachineStore {
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         return (try? secret.write(to: file(CloudMachines.secretKey(id, version)), atomically: true, encoding: .utf8)) != nil
     }
-    func deleteSecrets(except keep: Set<String>) {
-        for name in (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
-        where name.hasPrefix("secret-") && !keep.contains(String(name.dropFirst(7).dropLast(4))) {
-            try? FileManager.default.removeItem(at: folder.appendingPathComponent(name))
-        }
+    func deleteSecrets(_ keys: Set<String>) {
+        for key in keys { try? FileManager.default.removeItem(at: file(key)) }
     }
     func observe(_ changed: @escaping () -> Void) {
         // ponytail: polls the folder every 2 s; a file-system watcher if a test ever needs it faster.
@@ -253,6 +251,14 @@ final class ICloudSync: ObservableObject {
         self.cloud = cloud
         // The owner chose Download and the keys had not arrived: carry on with that choice
         // rather than asking again, unless either side has changed since.
+        // A device restored from a backup has its machines and its sync state but not the
+        // device-only secrets. Take them back from iCloud before anything is compared, or the
+        // state without them would be recorded as agreed.
+        if let cloud, !restoreMissingSecrets(from: cloud) {
+            status = .waitingForKeys
+            waitForKeys()
+            return
+        }
         if let pending = defaults.string(forKey: Self.pendingKey) {
             if let cloud, pending == cloud.revision + "|" + localDigest() {
                 download(cloud)
@@ -266,7 +272,9 @@ final class ICloudSync: ObservableObject {
             hasCloud: cloud != nil, everSynced: synced != nil, localEmpty: hosts.hosts.isEmpty,
             localChanged: localDigest() != defaults.string(forKey: Self.digestKey),
             cloudChanged: cloud?.revision != synced,
-            overwritten: mine != nil && mine == synced && cloud?.parent != synced)
+            // This device's own upload is what it last agreed on, and iCloud's copy was not
+            // built on it, however many revisions later: the uploads crossed.
+            overwritten: mine != nil && mine == synced && !(cloud?.ancestors.contains(mine ?? "") ?? true))
         switch action {
         case .none:
             // Keep saying what the last sync did until something else happens.
@@ -288,14 +296,30 @@ final class ICloudSync: ObservableObject {
     func resolve(_ direction: Direction) {
         choosing = false
         switch direction {
-        // The owner has seen iCloud's copy and replaces it on purpose: the new copy counts as
-        // made from it, so the device that uploaded that one follows instead of being asked too.
-        case .upload: upload(replacing: store.load()?.revision)
+        // The owner has seen iCloud's copy and replaces it on purpose. Every upload records the
+        // copy it replaces as an ancestor, so the device that uploaded that one follows instead
+        // of being asked too.
+        case .upload: upload()
         case .download:
             guard let cloud = store.load() else { status = .failed; return }
             defaults.set(cloud.revision + "|" + localDigest(), forKey: Self.pendingKey)
             download(cloud)
         }
+    }
+
+    /// False while a secret iCloud's copy names for one of this device's machines has not
+    /// arrived yet.
+    private func restoreMissingSecrets(from cloud: CloudMachines) -> Bool {
+        for host in hosts.hosts where hosts.secret(for: host) == nil {
+            let id = host.id.uuidString
+            // Only for the same machine with the same kind of credential; a machine iCloud
+            // describes differently is settled by the upload or download that follows.
+            guard let version = cloud.secretVersions[id],
+                  cloud.hosts.first(where: { $0.id == host.id })?.auth == host.auth else { continue }
+            guard let secret = store.secret(for: id, version: version) else { return false }
+            hosts.restoreSecret(secret, for: host)
+        }
+        return true
     }
 
     /// The owner's tap on "Upload" while iCloud shows no copy.
@@ -304,9 +328,7 @@ final class ICloudSync: ObservableObject {
         upload()
     }
 
-    /// - Parameter replacing: the revision in iCloud this upload knowingly replaces, when it
-    ///   is not the one this device last agreed on.
-    private func upload(replacing: String? = nil) {
+    private func upload() {
         retry?.cancel()
         let before = store.load()
         var versions: [String: String] = [:]
@@ -329,12 +351,16 @@ final class ICloudSync: ObservableObject {
             guard store.saveSecret(secret, for: id, version: version) else { status = .failed; return }
             versions[id] = version
         }
-        let copy = CloudMachines(revision: UUID().uuidString, parent: replacing ?? defaults.string(forKey: Self.revisionKey),
+        let copy = CloudMachines(revision: UUID().uuidString, ancestors: CloudMachines.ancestry(after: before),
                                  hosts: hosts.hosts, secretVersions: versions,
                                  device: UIDevice.current.name, updatedAt: Date())
         // If this fails the list in iCloud still names the old versions, which are untouched.
         guard store.save(copy) else { status = .failed; return }
-        store.deleteSecrets(except: copy.secretKeys)
+        // Drop only what this upload replaced. Anything else in the store may be a version
+        // another device has saved and is about to publish.
+        // ponytail: a version saved by an upload that then failed, or lost a race, is never
+        // collected; a sweep by age if the Keychain ever fills up with them.
+        store.deleteSecrets((before?.secretKeys ?? []).subtracting(copy.secretKeys))
         defaults.removeObject(forKey: Self.pendingKey)
         cloud = copy
         remember(copy.revision, uploadedHere: true)
