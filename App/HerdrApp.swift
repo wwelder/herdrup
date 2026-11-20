@@ -2544,8 +2544,13 @@ struct TerminalHomeView: View {
         // preference changes": both in-scene writers (`toggleSidebar`, `railSectionButton`)
         // set `columnVisibility` themselves in the same transaction, so a same-value
         // re-apply is all this can ever do for a gesture. Its real job is the remount.
-        .onChange(of: sidebarMinimized, initial: true) { _, _ in
-            columnVisibility = sidebarVisibility(for: selectedTab)
+        //
+        // The mount (both values equal) follows the section, so Gram keeps its rail. A
+        // change is the owner asking (the chevron, ⌘K) and stands as asked: on Gram too,
+        // where following the section would close the column they have just opened.
+        .onChange(of: sidebarMinimized, initial: true) { was, minimized in
+            columnVisibility = was == minimized ? sidebarVisibility(for: selectedTab)
+                : minimized ? .detailOnly : .all
         }
         .tint(Palette.brand)
         // Hardware-keyboard shortcuts (iPad): ⌘K minimises/expands the sidebar, ⌘/ opens the

@@ -38,4 +38,24 @@ final class GramSidebarTests: XCTestCase {
         XCTAssertTrue(minimise.waitForExistence(timeout: 5), "the chevron opens the column on Gram")
         attach(app, "4-gram-column-opened-by-hand")
     }
+
+    /// With the sidebar minimised as a preference, one tap on the chevron opens the column on
+    /// Gram: the preference changing must not put Gram's rail straight back.
+    func testTheChevronOpensTheColumnOnGramInOneTapWhenTheSidebarIsMinimised() throws {
+        guard UIDevice.current.userInterfaceIdiom == .pad else {
+            throw XCTSkip("Exercises the split layout")
+        }
+        let app = XCUIApplication()
+        app.launchEnvironment["HERDR_SCREENSHOT_MOCK"] = "list"
+        app.launchArguments += ["-ui.sidebarMinimized", "YES"]
+        app.launch()
+        let expand = app.buttons["Expand sidebar"].firstMatch
+        XCTAssertTrue(expand.waitForExistence(timeout: 15), "the home opens on its rail")
+        app.buttons["Gram"].firstMatch.tap()
+        XCTAssertTrue(expand.waitForExistence(timeout: 5), "the rail stays on Gram")
+        expand.tap()
+        XCTAssertTrue(app.buttons["Minimise sidebar"].firstMatch.waitForExistence(timeout: 5),
+                      "one tap opens the column")
+        XCTAssertFalse(expand.exists, "and the rail is gone")
+    }
 }
