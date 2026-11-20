@@ -28,6 +28,10 @@
 	<true/>
 	<key>com.apple.security.application-groups</key>
 	<array><string>group.inc.simcast.herdrup</string></array>
+	<!-- iCloud sync of the saved machines (ICloudSync): one sealed copy in iCloud key-value
+	     storage. Its key is a synchronizable Keychain item, which needs no entitlement of its own. -->
+	<key>com.apple.developer.ubiquity-kvstore-identifier</key>
+	<string>$(TeamIdentifierPrefix)inc.simcast.herdrup</string>
 	<key>keychain-access-groups</key>
 	<array><string>$(AppIdentifierPrefix)inc.simcast.herdrup</string></array>
 </dict>

@@ -18,6 +18,15 @@ final class KeychainHostKeyPolicy: HostKeyPolicy, @unchecked Sendable {
     private let lock = NSLock()
     private let service = "dev.herdr.hostkey.pins"
 
+    /// Posted on the main queue after this device pinned or re-pinned a host key itself (a
+    /// first connection, a pairing, the owner accepting a changed key). `ICloudSync` uploads it.
+    static let pinned = Notification.Name("dev.herdr.hostkey.pinned")
+
+    /// Asynchronously: the caller holds `lock`, and the main thread may be waiting for it.
+    private func announce() {
+        DispatchQueue.main.async { NotificationCenter.default.post(name: Self.pinned, object: nil) }
+    }
+
     func evaluate(host: String, port: UInt16, presented: String) -> HostKeyDecision {
         lock.lock(); defer { lock.unlock() }
         let account = accountKey(host: host, port: port)
@@ -27,7 +36,9 @@ final class KeychainHostKeyPolicy: HostKeyPolicy, @unchecked Sendable {
         case .notFound:
             // First contact: trust ONLY if the pin actually persists; a failed
             // write must not read as "trusted but unpinned" next launch.
-            return store(account: account, fingerprint: presented) ? .trust : .reject
+            guard store(account: account, fingerprint: presented) else { return .reject }
+            announce()
+            return .trust
         case .error:
             // A Keychain read error is NOT the absence of a pin. Fail CLOSED —
             // reading it as "no pin" would trust any key on a transient failure.
@@ -42,6 +53,14 @@ final class KeychainHostKeyPolicy: HostKeyPolicy, @unchecked Sendable {
     /// Returns whether the fingerprint was actually persisted. The caller MUST
     /// NOT reconnect on false — reconnecting without a stored pin would treat the
     /// next key as first contact (a TOFU window).
+    /// The fingerprint pinned for this endpoint, if there is one. For `ICloudSync`, which
+    /// carries a verified pin to the owner's other devices along with the credential.
+    func fingerprint(host: String, port: UInt16) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        if case .found(let fingerprint) = lookup(account: accountKey(host: host, port: port)) { return fingerprint }
+        return nil
+    }
+
     @discardableResult
     func pin(host: String, port: UInt16, fingerprint: String) -> Bool {
         lock.lock(); defer { lock.unlock() }
@@ -56,12 +75,29 @@ final class KeychainHostKeyPolicy: HostKeyPolicy, @unchecked Sendable {
         // the lock, there is no check-then-act race. Every status is checked, so
         // a failed persist is reported rather than silently trusted later.
         let updated = SecItemUpdate(query as CFDictionary, [kSecValueData as String: Data(fingerprint.utf8)] as CFDictionary)
-        if updated == errSecSuccess { return true }
+        if updated == errSecSuccess { announce(); return true }
         guard updated == errSecItemNotFound else { return false }
         var add = query
         add[kSecValueData as String] = Data(fingerprint.utf8)
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
+        guard SecItemAdd(add as CFDictionary, nil) == errSecSuccess else { return false }
+        announce()
+        return true
+    }
+
+    /// For a host key that reached this device through iCloud (`ICloudSync`): pins it when the
+    /// endpoint has no pin, as a first connection would, and never replaces one, so sync cannot
+    /// change a key this device verified itself. Returns the fingerprint in place afterwards;
+    /// the caller takes the credential only if that is the one it came with. Nil when the
+    /// Keychain could not be read or written.
+    func adopt(host: String, port: UInt16, fingerprint: String) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        let account = accountKey(host: host, port: port)
+        switch lookup(account: account) {
+        case .found(let existing): return existing
+        case .notFound: return store(account: account, fingerprint: fingerprint) ? fingerprint : nil
+        case .error: return nil
+        }
     }
 
     /// Canonicalizes the pin key so spellings that reach the same host share one

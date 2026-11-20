@@ -130,6 +130,7 @@ struct RootView: View {
             #endif
         }
         .preferredColorScheme(.dark)
+        .modifier(ICloudConflictQuestion())
         .fullScreenCover(item: $invites.pending) { pending in
             inviteAccept(pending.invite)
         }
@@ -774,6 +775,10 @@ struct ConnectView: View {
                     header
                     if !savedHosts.hosts.isEmpty {
                         savedHostsSection
+                    }
+                    VStack(alignment: .leading, spacing: 8) {
+                        connectSectionLabel("ICLOUD")
+                        ICloudSyncSection()
                     }
                     if sharedMachines.machines.isEmpty {
                         if savedHosts.hosts.isEmpty { emptyState }
@@ -7878,6 +7883,10 @@ struct SettingsView: View {
         detailScaffold(title: "Machines", subtitle: machinesSubtitle, showBack: showBack) {
             connectionSection
             federationSection
+            VStack(alignment: .leading, spacing: 0) {
+                sectionLabel("ICLOUD")
+                ICloudSyncSection().padding(.horizontal, 16).padding(.top, 10)
+            }
         }
     }
 
