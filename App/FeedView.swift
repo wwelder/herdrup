@@ -1042,6 +1042,7 @@ struct FeedAskTarget: Identifiable, Equatable {
     let session: String?
     /// The asking agent's pane. Nil for the orchestrator, which is found by `name`.
     let paneID: String?
+    /// The agent's herdr name. herdr names an agent that has none by its pane id.
     let name: String
     /// What the reply starts with: names the card for an agent that did not ask it.
     let about: String
@@ -1053,7 +1054,7 @@ struct FeedAskTarget: Identifiable, Equatable {
             self.machine = machine
             session = asker.session == "default" ? nil : asker.session
             paneID = asker.paneID
-            name = asker.agent.isEmpty ? "the agent" : asker.agent
+            name = asker.agent.isEmpty ? asker.paneID : asker.agent
             about = ""
         } else {
             let defaults = UserDefaults.standard
@@ -1120,15 +1121,20 @@ private struct FeedAgentPage: View {
         do {
             let agents = try await client.agentList()
             let match = agents.first { agent in
-                if let pane = target.paneID { return agent.paneID == pane }
-                return agent.name == target.name
+                guard let pane = target.paneID else { return agent.name == target.name }
+                // The pane, and still the agent that asked: another may have started in
+                // it since. An agent without a name can only be told by its pane.
+                return agent.paneID == pane && (target.name == pane || agent.name == target.name)
             }
             guard let agent = match else {
                 problem = "\(target.name) is no longer running there."
                 return
             }
             self.client = client
-            found = agent
+            // Marked as another session's, as the All view marks one: the avatar and the
+            // push mute are kept by the machine and session open in Agents, under a pane id
+            // that may be somebody else's there, so they are not offered on this page.
+            found = agent.inSession(target.session ?? "default")
         } catch {
             problem = error.localizedDescription
         }

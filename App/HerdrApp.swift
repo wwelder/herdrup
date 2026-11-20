@@ -7362,7 +7362,9 @@ struct TerminalPaneContent: View {
         // the app can drive the menu with raw keys (answer a plan-approval / AskUserQuestion).
         // Only hold the prior intent agent for a true composer blip (composer nil, not blocked).
         if priorWasIntent && liveLostComposer && !live.isAwaitingMenuInput { return }
-        agent = live
+        // The list names no session; the pane keeps the one it was opened with, so what is
+        // withheld from another session's agent (`fromOtherSession`) stays withheld.
+        agent = agent?.session.map(live.inSession) ?? live
     }
 
     /// One prompt-only delivery attempt for a pending pre-fill. The tested
