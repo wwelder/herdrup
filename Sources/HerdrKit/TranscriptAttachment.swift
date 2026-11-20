@@ -46,7 +46,7 @@ extension GramAttachmentPrompt {
             let noun = reference[reference.index(after: reference.startIndex)..<marker.lowerBound]
             let name: String
             if noun == "Photo", command.isImage {
-                let ext = URL(fileURLWithPath: String(command.path)).pathExtension
+                let ext = (String(command.path) as NSString).pathExtension
                 name = ext.isEmpty ? "Photo" : "Photo.\(ext)"
             } else if noun.hasPrefix("File "), !command.isImage {
                 name = String(noun.dropFirst(5))
