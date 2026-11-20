@@ -2166,7 +2166,7 @@ struct TerminalHomeView: View {
         // declared, so a pane opened from a push deep-link while Gram/Settings is showing
         // would otherwise leave the tab bar drawing over it. Selecting Agents keeps every
         // open path (row tap, deep-link, spawn, swipe-paging) consistent.
-        selectedTab = .agents
+        select(.agents)
         frontID = slot.id
     }
 
@@ -2317,7 +2317,7 @@ struct TerminalHomeView: View {
         frontID = nil
         FeedStore.shared.opening = push.pendingFeed
         push.pendingFeed = nil
-        selectedTab = .feed
+        select(.feed)
     }
 
     /// Swipe-page from the fronted pane to its prev/next sibling (clamped). `open()`s the
@@ -2544,8 +2544,8 @@ struct TerminalHomeView: View {
         // preference changes": both in-scene writers (`toggleSidebar`, `railSectionButton`)
         // set `columnVisibility` themselves in the same transaction, so a same-value
         // re-apply is all this can ever do for a gesture. Its real job is the remount.
-        .onChange(of: sidebarMinimized, initial: true) { _, minimized in
-            columnVisibility = minimized ? .detailOnly : .all
+        .onChange(of: sidebarMinimized, initial: true) { _, _ in
+            columnVisibility = sidebarVisibility(for: selectedTab)
         }
         .tint(Palette.brand)
         // Hardware-keyboard shortcuts (iPad): ⌘K minimises/expands the sidebar, ⌘/ opens the
@@ -2711,7 +2711,23 @@ struct TerminalHomeView: View {
     private static let sidebarTabBarMaxWidth: CGFloat = DesignTokens.Size.tabBarMaxWidth
 
     private func select(_ tab: HomeTab) {
+        // Only on the way into or out of Gram. Every other switch leaves the column as it
+        // is, including one iPadOS collapsed by itself. Written with the section, in one
+        // transaction, so the detail is laid out once at its final width: a second width
+        // costs the live terminal a reflow (see `toggleSidebar`).
+        if tab != selectedTab, tab == .gram || selectedTab == .gram {
+            columnVisibility = sidebarVisibility(for: tab)
+        }
         selectedTab = tab
+    }
+
+    /// Whether the sidebar column shows for a section. Gram is one conversation: its column
+    /// would hold a title, a sentence and empty space where earlier designs kept the
+    /// conversation list. So while Gram is open the column gives way to the rail, and it
+    /// comes back as the owner left it on the way out. The preference (`sidebarMinimized`)
+    /// is not touched; the rail's chevron still opens the column on Gram for whoever asks.
+    private func sidebarVisibility(for tab: HomeTab) -> NavigationSplitViewVisibility {
+        sidebarMinimized || tab == .gram ? .detailOnly : .all
     }
 
     /// The phone's tab bar selection, through `select`.
@@ -2891,10 +2907,13 @@ struct TerminalHomeView: View {
 
     /// A rail section icon. Tapping selects the section AND expands, which is the
     /// predictable reading of a click on a minimised menu; the chevron above expands
-    /// without changing section.
+    /// without changing section. Gram is the exception: it only selects (`sidebarVisibility`).
     private func railSectionButton(_ tab: HomeTab, badge: Int = 0) -> some View {
         Button {
             select(tab)
+            // Gram has nothing to put in the column (`sidebarVisibility`): its icon
+            // selects it and the rail stays.
+            guard tab != .gram else { return }
             // Both variables, for the same reason `toggleSidebar` writes both: the rail
             // is only on screen when the LAYOUT is collapsed, which the preference may
             // not reflect, and `onChange` does not fire when the flag is already false.
