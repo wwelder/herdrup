@@ -63,6 +63,9 @@ final class SavedHostsStore: ObservableObject {
     static let shared = SavedHostsStore()
 
     private let defaultsKey = ShareStorage.hostsKey
+    /// Keychain accounts a download from iCloud stopped using, each with when: see
+    /// `replaceAll` and `removeRetiredAccounts`. Kept beside the list, in the same defaults.
+    private let retiredKey = "dev.herdr.savedHosts.retiredAccounts.v1"
     private let keychain = KeychainCredentialStore(service: "dev.herdr.credentials")
     /// A host's password lives in its own Keychain service so a host's key and
     /// password never collide on the same account id. Same device-only discipline.
@@ -77,9 +80,20 @@ final class SavedHostsStore: ObservableObject {
         } else {
             hosts = []
         }
+        // Only the app does this. An extension that starts in the middle of a download would
+        // take the accounts being staged for unused.
+        if Bundle.main.bundleURL.pathExtension != "appex" { removeRetiredAccounts() }
         #if DEBUG
         seedHostFromEnvironment()
         #endif
+    }
+
+    /// Reads the list again. For the Share extension, whose process can outlive a change the
+    /// app made to the machines or to where their secrets are kept.
+    func reload() {
+        guard let data = ShareStorage.defaults.data(forKey: defaultsKey),
+              let decoded = try? JSONDecoder().decode([SavedHost].self, from: data), decoded != hosts else { return }
+        hosts = decoded
     }
 
     #if DEBUG
@@ -230,36 +244,73 @@ final class SavedHostsStore: ObservableObject {
     }
 
     /// Replaces every saved machine with `machines` (iCloud's copy, see `ICloudSync`), all or
-    /// nothing, in three steps so that a Keychain failure at any point leaves no machine with
-    /// a credential that is not its own:
-    /// 1. Stage. Every incoming secret is saved under a new account nothing uses. If one does
-    ///    not stick, nothing in use has been touched.
-    /// 2. Commit. The one write of the list switches every machine to its new account. A
+    /// nothing, so that a Keychain failure or a shutdown at any point leaves no machine with a
+    /// credential that is not its own, and none without the one it had:
+    /// 1. A machine whose secret is the one this device already holds for it keeps its Keychain
+    ///    account. Nothing is written for it.
+    /// 2. Stage. Every other incoming secret is saved under a new account nothing uses. If one
+    ///    does not stick, nothing in use has been touched.
+    /// 3. Commit. The one write of the list switches those machines to their new accounts. A
     ///    machine given no secret points at an account that holds none, so the credential it
     ///    had (perhaps for another address, or a host key this device does not trust) is out
     ///    of reach from that moment.
-    /// 3. Clean up the accounts the old list used. A failure here leaves items no machine names.
+    /// Nothing is deleted here. The accounts this call may leave unused are written down
+    /// first and removed at a later launch (`removeRetiredAccounts`).
     @discardableResult
     func replaceAll(_ machines: [(host: SavedHost, secret: String?)]) -> Bool {
         func store(_ host: SavedHost) -> KeychainCredentialStore { host.auth == .key ? keychain : passwordKeychain }
         var staged: [SavedHost] = []
+        var fresh: [(host: SavedHost, secret: String?)] = []
         for machine in machines {
             var host = machine.host
-            host.secretAccount = "\(host.id.uuidString).\(UUID().uuidString)"
-            staged.append(host)
-            if let secret = machine.secret, !store(host).save(account: host.account, secret: secret) {
-                for host in staged { _ = store(host).delete(account: host.account) }
-                return false
+            // Kept only when this device holds the very same secret, byte for byte. A machine
+            // given no secret always moves to a new, empty account: a Keychain read that fails
+            // also reads as "no secret", and must not leave it on an account that holds one.
+            if let incoming = machine.secret, let mine = hosts.first(where: { $0.id == host.id }), mine.auth == host.auth,
+               let held = secret(for: mine), held.utf8.elementsEqual(incoming.utf8) {
+                host.secretAccount = mine.secretAccount
+            } else {
+                host.secretAccount = "\(host.id.uuidString).\(UUID().uuidString)"
+                fresh.append((host, machine.secret))
             }
+            staged.append(host)
         }
-        let old = hosts
+        // Either the new accounts end up unused (the switch never happens) or some of the
+        // ones in use now do (it does). Both are written down before anything is saved.
+        var retired = ShareStorage.defaults.dictionary(forKey: retiredKey) as? [String: Double] ?? [:]
+        let now = Date().timeIntervalSince1970
+        for account in fresh.map(\.host.account) + hosts.map(\.account) { retired[account] = now }
+        ShareStorage.defaults.set(retired, forKey: retiredKey)
+        for machine in fresh {
+            if let secret = machine.secret, !store(machine.host).save(account: machine.host.account, secret: secret) { return false }
+        }
         hosts = staged
         persist()
-        for host in old {
-            _ = keychain.delete(account: host.account)
-            _ = passwordKeychain.delete(account: host.account)
-        }
         return true
+    }
+
+    /// Removes the Keychain items of accounts a download stopped using. Not at the download:
+    /// the write of the list that stops naming them reaches disk a moment later, and a
+    /// shutdown before that brings back the old list, which still needs them. So only at a
+    /// launch at least a day after the account was written down, and only if no saved machine
+    /// names it by then. An account that is in use again is simply forgotten.
+    private func removeRetiredAccounts() {
+        guard var retired = ShareStorage.defaults.dictionary(forKey: retiredKey) as? [String: Double], !retired.isEmpty else { return }
+        var wait: TimeInterval = 24 * 60 * 60
+        #if DEBUG
+        // `HERDR_DEBUG_RETIRE_AFTER=<seconds>`: for the iCloud sync test, which cannot wait a day.
+        if let seconds = ProcessInfo.processInfo.environment["HERDR_DEBUG_RETIRE_AFTER"].flatMap(TimeInterval.init) { wait = seconds }
+        #endif
+        let inUse = Set(hosts.map(\.account))
+        let due = Date().timeIntervalSince1970 - wait
+        for (account, since) in retired {
+            if inUse.contains(account) {
+                retired[account] = nil
+            } else if since <= due, keychain.delete(account: account), passwordKeychain.delete(account: account) {
+                retired[account] = nil
+            }
+        }
+        ShareStorage.defaults.set(retired, forKey: retiredKey)
     }
 
     private func persist() {
