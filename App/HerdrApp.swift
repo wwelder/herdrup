@@ -5581,6 +5581,9 @@ struct TerminalPaneContent: View {
     let embedded: Bool
     /// The page was opened with a `draft` in its reply field (see `init`).
     private let opensWithDraft: Bool
+    /// The draft starts a side question to Claude (`ClaudeSideAnswer`). Its answer shows only
+    /// in the terminal, so the page opens there and keeps the reply field in that mode.
+    private let sideQuestions: Bool
     @State private var reply: String
     @StateObject private var composerKeyboard = ComposerKeyboard()
     /// Every staged attachment, in paste order. Each sends as its own gram message and
@@ -5771,9 +5774,10 @@ struct TerminalPaneContent: View {
         _agent = State(initialValue: agent)
         _reply = State(initialValue: initialReply.isEmpty ? draft : initialReply)
         opensWithDraft = !draft.isEmpty
+        sideQuestions = draft.hasPrefix(ClaudeSideAnswer.command)
         _pendingPrefill = State(initialValue: !initialReply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         _chatModel = StateObject(wrappedValue: ChatModel(target: paneID))
-        _showsChat = State(initialValue: ChatPreference.showsChat(paneID: paneID))
+        _showsChat = State(initialValue: !sideQuestions && ChatPreference.showsChat(paneID: paneID))
     }
 
     private var group: AgentGroup? { agent.map { AgentRow(info: $0).group } }
@@ -7007,6 +7011,10 @@ struct TerminalPaneContent: View {
             submitAfterVoice()
             return
         }
+        // The field starts every side question; with nothing after it there is none to ask.
+        if sideQuestions, case .submitText(let text) = action, replyAttachments.isEmpty,
+           text.trimmingCharacters(in: .whitespacesAndNewlines)
+            == ClaudeSideAnswer.command.trimmingCharacters(in: .whitespaces) { return }
         if !autoDelivering { userInputToken += 1 }
         if case .submitText(let text) = action, !replyAttachments.isEmpty {
             sendPromptWithAttachments(text, attachments: replyAttachments)
@@ -7034,17 +7042,19 @@ struct TerminalPaneContent: View {
         // It is still only ever THIS text: restored below if the send was refused or
         // did not land, and never over something typed since (the composer stays
         // editable for the whole round trip — see the `isEnabled` comment in replyBar).
+        // A side question leaves the field ready for the next one.
+        let emptyReply = sideQuestions ? ClaudeSideAnswer.command : ""
         let clearedReply: String?
         if case .submitText(let text) = action, reply == text, !text.isEmpty {
             clearedReply = text
-            reply = ""
+            reply = emptyReply
         } else {
             clearedReply = nil
         }
         // An attachment batch keeps its caption until every upload and its prompt
         // have completed; its separate path above owns the late clear.
         func restoreClearedReply() {
-            guard let clearedReply, reply.isEmpty else { return }
+            guard let clearedReply, reply == emptyReply else { return }
             reply = clearedReply
         }
         let isKeyAction: Bool
@@ -7082,6 +7092,8 @@ struct TerminalPaneContent: View {
             do {
                 switch plan {
                 case .prompt(let pane, let text):
+                    // The last answer's panel would take this message and lose it.
+                    if sideQuestions { await client.closeClaudeSideAnswer(pane: pane) }
                     try await submitPrompt(pane: pane, text: text, outgoingModel: outgoingModel, outgoingID: outgoingID)
                 case .text(let pane, let text):
                     try await client.sendText(pane: pane, text: text)
