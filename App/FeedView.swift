@@ -278,7 +278,11 @@ final class FeedStore: ObservableObject {
             setRead([entry], true)
             answered = Answered(id: entry.id, next: next)
         } catch let error as APIError {
-            failure = error.message
+            // The reader offers a written reply on every card. A herdr from before that
+            // takes text only on a card that asked for it, and says so in these words.
+            failure = error.message == "the card takes no text"
+                ? "The herdr on the feed machine is too old to take a written reply to this card. Update herdr there, or pick one of the card's choices."
+                : error.message
         } catch {
             failure = error.localizedDescription
         }
@@ -333,7 +337,13 @@ struct FeedView: View {
             .background(Palette.ground)
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: String.self) { id in
-                FeedReaderView(entryID: id)
+                // Keyed by the card: a push that opens a card while another is being read
+                // replaces the path's one element, and without the key the reader on screen
+                // keeps its state, and so the card it had.
+                // ponytail: keyed by the path's element, which the reader's own paging does
+                // not change. Opened on A and paged to B, a push for A leaves B on screen;
+                // move the paging into the path if that ever matters.
+                FeedReaderView(entryID: id).id(id)
             }
         }
         .onChange(of: store.opening, initial: true) { _, card in
@@ -670,8 +680,9 @@ private func feedPreview(_ entry: FeedEntry) -> String {
         .trimmingCharacters(in: .whitespaces)
 }
 
-/// A card waiting for the owner, in "Needs you": its buttons sit on the card. A card that
-/// takes text offers Reply, which opens it with the text field.
+/// A card waiting for the owner, in "Needs you": its buttons sit on the card. Reply is always
+/// one of them and opens the card with the text field, so the owner can answer in their own
+/// words when none of the card's choices is the one they want.
 private struct FeedAskCard: View {
     let entry: FeedEntry
     let sending: Bool
@@ -706,7 +717,7 @@ private struct FeedAskCard: View {
 }
 
 /// A card's actions as pills: the first is filled with ink (the design's acting control), the
-/// rest quiet, a destructive one in red. Reply, when the card takes text, comes last.
+/// rest quiet, a destructive one in red. Reply, where the caller offers it, comes last.
 private struct FeedActionButtons: View {
     let entry: FeedEntry
     let sending: Bool
@@ -719,7 +730,7 @@ private struct FeedActionButtons: View {
                 pill(action.label, primary: index == 0 && !action.isDestructive,
                      destructive: action.isDestructive) { onChoose(action) }
             }
-            if entry.input != nil, let onReply {
+            if let onReply {
                 pill("Reply", primary: entry.actions.isEmpty, destructive: false, action: onReply)
             }
             Spacer(minLength: 0)
@@ -817,6 +828,8 @@ struct FeedReaderView: View {
     @State private var entryID: String
     @State private var text = ""
     @FocusState private var typing: Bool
+    /// The reading size the owner set for Chat applies to a card too.
+    @AppStorage(ChatTextSize.storageKey) private var fontSize = ChatTextSize.defaultPoints
 
     init(entryID: String) {
         _entryID = State(initialValue: entryID)
@@ -834,9 +847,13 @@ struct FeedReaderView: View {
                 }
                 .scrollDismissesKeyboard(.interactively)
                 .id(entry.id)
+                // On a wide window the card takes the width the owner chose for Chat and Gram
+                // (one width for all three), and its edges drag the same way.
+                .conversationColumnResizer(.feed)
                 .safeAreaInset(edge: .bottom) {
                     if entry.isPending() { answerBar(entry) }
                 }
+                .environment(\.chatTextScale, CGFloat(fontSize / ChatTextSize.defaultPoints))
             } else {
                 Text("This card is no longer in the feed.")
                     .font(Typography.app(15))
@@ -891,7 +908,7 @@ struct FeedReaderView: View {
                     Text(verbatim: entry.title)
                 }
             }
-            .font(Typography.app(26, .bold))
+            .font(Self.titleFont(entry.title))
             .foregroundStyle(Palette.text)
             .padding(.top, 6)
             if let date = entry.date {
@@ -901,52 +918,64 @@ struct FeedReaderView: View {
                     .padding(.top, 4)
             }
             if !entry.body.isEmpty {
-                ChatMarkdownView(markdown: entry.body)
+                ChatMarkdownView(markdown: entry.body, tone: .article)
                     .padding(.top, 18)
             }
             FeedStatusLine(entry: entry, output: store.outputs[entry.id])
                 .padding(.top, 18)
         }
+        .textSelection(.enabled)
         .padding(.horizontal, 20)
         .padding(.top, 8)
         .padding(.bottom, 32)
-        .frame(maxWidth: 680, alignment: .leading)
-        .frame(maxWidth: .infinity)
+        .conversationColumn(cap: Self.compactWidth, probe: "feed-column")
     }
 
-    /// The text field (when the card takes text) over the card's buttons. A card with only a
-    /// text field sends with Send; an action sends the text along with it.
+    /// The most a card takes on a phone. On a wide window the shared conversation column
+    /// decides (`conversationColumn`).
+    private static let compactWidth: CGFloat = 680
+
+    /// A headline is set large. A title that is a whole question, as a fleet card's is, would
+    /// fill the screen in that size, so it steps down with its length and reads as a lead.
+    static func titleFont(_ title: String) -> Font {
+        switch title.count {
+        case ...60: return Typography.app(26, .bold)
+        case ...120: return Typography.app(22, .bold)
+        default: return Typography.app(19, .semibold)
+        }
+    }
+
+    /// The text field over the card's buttons. Send answers with the text alone, whatever
+    /// buttons the card has: the owner is never made to pick a choice they do not want in
+    /// order to say something else. A button sends the text along with it.
     private func answerBar(_ entry: FeedEntry) -> some View {
         let note = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let sending = store.sending.contains(entry.id)
+        let placeholder = entry.input.flatMap { $0.isEmpty ? nil : $0 } ?? "Reply"
         return VStack(alignment: .leading, spacing: 10) {
-            if let placeholder = entry.input {
-                HStack(alignment: .bottom, spacing: 8) {
-                    TextField(placeholder.isEmpty ? "Reply" : placeholder, text: $text, axis: .vertical)
-                        .lineLimit(1...6)
-                        .font(Typography.app(16))
-                        .foregroundStyle(Palette.text)
-                        .focused($typing)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 9)
-                        .background(Palette.surface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                        .accessibilityIdentifier("feed-reply-field")
-                    if entry.actions.isEmpty {
-                        Button {
-                            typing = false
-                            store.choose(entry, nil, text: note)
-                        } label: {
-                            Image(systemName: "arrow.up")
-                                .font(.system(size: 16, weight: .bold))
-                                .foregroundStyle(Palette.ground)
-                                .frame(width: 36, height: 36)
-                                .background(Circle().fill(note.isEmpty ? Palette.textFaint : Palette.text))
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(note.isEmpty || sending)
-                        .accessibilityLabel("Send")
-                    }
+            HStack(alignment: .bottom, spacing: 8) {
+                TextField(placeholder, text: $text, axis: .vertical)
+                    .lineLimit(1...6)
+                    .font(Typography.app(16))
+                    .foregroundStyle(Palette.text)
+                    .focused($typing)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
+                    .background(Palette.surface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .accessibilityIdentifier("feed-reply-field")
+                Button {
+                    typing = false
+                    store.choose(entry, nil, text: note)
+                } label: {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(Palette.ground)
+                        .frame(width: 36, height: 36)
+                        .background(Circle().fill(note.isEmpty ? Palette.textFaint : Palette.text))
                 }
+                .buttonStyle(.plain)
+                .disabled(note.isEmpty || sending)
+                .accessibilityLabel("Send")
             }
             if !entry.actions.isEmpty {
                 FeedActionButtons(entry: entry, sending: sending) { action in
@@ -959,6 +988,8 @@ struct FeedReaderView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+        // Under the card, in the same column.
+        .conversationColumn(cap: Self.compactWidth)
         .background(Palette.ground)
         .overlay(alignment: .top) { Rectangle().fill(Palette.hairlineQuiet).frame(height: 1) }
     }
