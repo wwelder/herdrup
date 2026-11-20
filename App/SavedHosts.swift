@@ -30,9 +30,23 @@ struct SavedHost: Codable, Identifiable, Hashable {
     /// JSON written before password auth has no `authKind`, decodes to nil, and resolves
     /// to `.key` via `auth` — so every legacy host stays key-based.
     var authKind: SavedAuthKind?
+    /// The Keychain account this machine's secret is under on THIS device. OPTIONAL for
+    /// migration like the fields above: nil means the machine's `id`, where every secret
+    /// was before the field existed. Only a download from iCloud sets it (`replaceAll`).
+    var secretAccount: String?
 
     /// The resolved auth kind for callers — a legacy (nil) host is key-based.
     var auth: SavedAuthKind { authKind ?? .key }
+
+    /// The Keychain account to look this machine's secret up under.
+    var account: String { secretAccount ?? id.uuidString }
+
+    /// The machine as it travels to other devices: without this device's Keychain account.
+    var portable: SavedHost {
+        var copy = self
+        copy.secretAccount = nil
+        return copy
+    }
 
     /// The primary display label: the nickname if set, else the host itself.
     var label: String {
@@ -140,18 +154,18 @@ final class SavedHostsStore: ObservableObject {
             case .key(let pem):
                 let key = pem.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !key.isEmpty,
-                      keychain.save(account: existing.id.uuidString, secret: key) else { return false }
+                      keychain.save(account: hosts[i].account, secret: key) else { return false }
                 newKind = .key
             case .password(let password):
                 guard !password.isEmpty,
-                      passwordKeychain.save(account: existing.id.uuidString, secret: password) else { return false }
+                      passwordKeychain.save(account: hosts[i].account, secret: password) else { return false }
                 newKind = .password
             }
             // Auth kind changed → best-effort drop the stale secret from the other store.
             if newKind != existing.auth {
                 switch existing.auth {
-                case .key: _ = keychain.delete(account: existing.id.uuidString)
-                case .password: _ = passwordKeychain.delete(account: existing.id.uuidString)
+                case .key: _ = keychain.delete(account: hosts[i].account)
+                case .password: _ = passwordKeychain.delete(account: hosts[i].account)
                 }
             }
         }
@@ -182,10 +196,10 @@ final class SavedHostsStore: ObservableObject {
 
     /// The private key for a saved host, from the Keychain. Nil if missing/unreadable
     /// — the caller must treat that as "cannot reconnect", not "empty key".
-    func key(for host: SavedHost) -> String? { keychain.load(account: host.id.uuidString) }
+    func key(for host: SavedHost) -> String? { keychain.load(account: host.account) }
 
     /// The password for a saved host, from the Keychain. Nil if missing/unreadable.
-    func password(for host: SavedHost) -> String? { passwordKeychain.load(account: host.id.uuidString) }
+    func password(for host: SavedHost) -> String? { passwordKeychain.load(account: host.account) }
 
     /// Removes a saved host. Deletes the secret from BOTH stores first and drops the
     /// host record ONLY if both confirm it is gone — a failed Keychain delete must not
@@ -194,8 +208,8 @@ final class SavedHostsStore: ObservableObject {
     /// Returns whether it removed; on false the row stays put so the user can retry.
     @discardableResult
     func delete(_ host: SavedHost) -> Bool {
-        guard keychain.delete(account: host.id.uuidString),
-              passwordKeychain.delete(account: host.id.uuidString) else { return false }
+        guard keychain.delete(account: host.account),
+              passwordKeychain.delete(account: host.account) else { return false }
         hosts.removeAll { $0.id == host.id }
         persist()
         return true
@@ -210,48 +224,41 @@ final class SavedHostsStore: ObservableObject {
     /// not their device-only secrets (see `ICloudSync`).
     @discardableResult
     func restoreSecret(_ secret: String, for host: SavedHost) -> Bool {
-        let saved = (host.auth == .key ? keychain : passwordKeychain).save(account: host.id.uuidString, secret: secret)
+        let saved = (host.auth == .key ? keychain : passwordKeychain).save(account: host.account, secret: secret)
         if saved { objectWillChange.send() }
         return saved
     }
 
     /// Replaces every saved machine with `machines` (iCloud's copy, see `ICloudSync`), all or
-    /// nothing. Each machine ends up with exactly the credential given: a nil secret removes
-    /// the one this device had under that id, which may belong to another address or to a host
-    /// key this device does not trust. If a Keychain change does not stick, the ones already
-    /// made are undone and the list is left alone.
+    /// nothing, in three steps so that a Keychain failure at any point leaves no machine with
+    /// a credential that is not its own:
+    /// 1. Stage. Every incoming secret is saved under a new account nothing uses. If one does
+    ///    not stick, nothing in use has been touched.
+    /// 2. Commit. The one write of the list switches every machine to its new account. A
+    ///    machine given no secret points at an account that holds none, so the credential it
+    ///    had (perhaps for another address, or a host key this device does not trust) is out
+    ///    of reach from that moment.
+    /// 3. Clean up the accounts the old list used. A failure here leaves items no machine names.
     @discardableResult
     func replaceAll(_ machines: [(host: SavedHost, secret: String?)]) -> Bool {
-        var undo: [(store: KeychainCredentialStore, account: String, before: String?)] = []
-        func set(_ store: KeychainCredentialStore, _ account: String, _ secret: String?) -> Bool {
-            let before = store.load(account: account)
-            if before == secret, secret != nil { return true }
-            undo.append((store, account, before))
-            if let secret { return store.save(account: account, secret: secret) }
-            return store.delete(account: account)
-        }
-        var done = true
-        for machine in machines where done {
-            let id = machine.host.id.uuidString
-            let (used, unused) = machine.host.auth == .key ? (keychain, passwordKeychain) : (passwordKeychain, keychain)
-            done = set(used, id, machine.secret) && set(unused, id, nil)
-        }
-        let keep = Set(machines.map(\.host.id))
-        for old in hosts where done && !keep.contains(old.id) {
-            done = set(keychain, old.id.uuidString, nil) && set(passwordKeychain, old.id.uuidString, nil)
-        }
-        guard done else {
-            for step in undo.reversed() {
-                if let before = step.before {
-                    _ = step.store.save(account: step.account, secret: before)
-                } else {
-                    _ = step.store.delete(account: step.account)
-                }
+        func store(_ host: SavedHost) -> KeychainCredentialStore { host.auth == .key ? keychain : passwordKeychain }
+        var staged: [SavedHost] = []
+        for machine in machines {
+            var host = machine.host
+            host.secretAccount = "\(host.id.uuidString).\(UUID().uuidString)"
+            staged.append(host)
+            if let secret = machine.secret, !store(host).save(account: host.account, secret: secret) {
+                for host in staged { _ = store(host).delete(account: host.account) }
+                return false
             }
-            return false
         }
-        hosts = machines.map(\.host)
+        let old = hosts
+        hosts = staged
         persist()
+        for host in old {
+            _ = keychain.delete(account: host.account)
+            _ = passwordKeychain.delete(account: host.account)
+        }
         return true
     }
 

@@ -263,7 +263,7 @@ struct HostEditor: View {
                         // and the paste field shows the key while it is being pasted. A
                         // security claim left standing after the property it described is gone
                         // is worse than no claim, so it says what is actually true instead.
-                        Text("Pick your ed25519 private key file, or paste the key below. It is stored in the Keychain on this device only, and sent over the SSH connection.")
+                        Text("Pick your ed25519 private key file, or paste the key below. It is stored in the Keychain on this device and sent over the SSH connection. With iCloud sync on, an encrypted copy also goes to iCloud for your other devices.")
                             .font(Typography.app(13)).foregroundStyle(Palette.textDim)
 
                         // FILE FIRST, and deliberately so. herdrup runs on macOS as a

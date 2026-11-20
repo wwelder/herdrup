@@ -206,8 +206,8 @@ final class ICloudSync: ObservableObject {
     private static let enabledKey = "icloud.sync.machines"
     /// The revision of the copy this device last agreed on.
     private static let revisionKey = "icloud.sync.revision"
-    /// The digest of this device's machines as they were when it agreed.
-    private static let digestKey = "icloud.sync.digest"
+    /// This device's machines as they were when it agreed (`Baseline`).
+    private static let baselineKey = "icloud.sync.baseline"
     private static let saltKey = "icloud.sync.salt"
 
     @Published private(set) var status: Status = .off
@@ -300,12 +300,13 @@ final class ICloudSync: ObservableObject {
         sealingKey = key
         let synced = defaults.string(forKey: Self.revisionKey)
         // Only from the copy this device had agreed on. A changed copy is for the plan to
-        // settle: taking secrets from it first would make its change look like a local one too.
+        // settle, and a secret this device lacks does not count as a local change (`changed`),
+        // so a restored device simply takes the newer copy.
         if let cloud, cloud.revision == synced { restoreMissingSecrets(from: cloud) }
         let local = snapshot()
         let action = CloudSyncPlan.action(
             hasCloud: cloud != nil, everSynced: synced != nil, localEmpty: local.isEmpty,
-            localChanged: digest(local) != defaults.string(forKey: Self.digestKey),
+            localChanged: changed(local),
             cloudChanged: cloud?.revision != synced,
             // iCloud's copy was not built on the one this device last agreed on.
             overwritten: synced.map { cloud?.ancestors.contains($0) == false } ?? false)
@@ -347,7 +348,7 @@ final class ICloudSync: ObservableObject {
     /// This device's machines with the secret and the pinned host key it holds for each, in
     /// one reading: what is uploaded and what is remembered as agreed have to be the same one.
     private func snapshot() -> [CloudMachines.Machine] {
-        hosts.hosts.map { .init(host: $0, secret: hosts.secret(for: $0), pin: pin(for: $0)) }
+        hosts.hosts.map { .init(host: $0.portable, secret: hosts.secret(for: $0), pin: pin(for: $0)) }
     }
 
     /// What this device may take of a machine in iCloud's copy: its secret only with the host
@@ -420,7 +421,7 @@ final class ICloudSync: ObservableObject {
         withheld = 0
         // The reading that was uploaded, not a new one: a host key pinned by a connection in
         // the meantime then shows as a change, and goes up next.
-        remember(copy.revision, digest(local))
+        remember(copy.revision, local)
         status = .uploaded(copy.machines.count)
     }
 
@@ -440,11 +441,12 @@ final class ICloudSync: ObservableObject {
                 // same address and the copy names no other host key for it: that one stays.
                 secret = mine.secret
             }
-            // Any other credential this device had under the machine's id goes (`replaceAll`):
-            // it may be for another address, or for a host key this device does not trust.
+            // Any other credential this device had for the machine is out of reach once the
+            // list is replaced (`replaceAll`): it may be for another address, or for a host
+            // key this device does not trust.
             if secret == nil, theirs.secret != nil { skipped += 1 }
             machines.append((theirs.host, secret))
-            installed.append(.init(host: theirs.host, secret: secret, pin: taken.pin))
+            installed.append(.init(host: theirs.host.portable, secret: secret, pin: taken.pin))
         }
         retry?.cancel()
         applying = true
@@ -453,7 +455,7 @@ final class ICloudSync: ObservableObject {
         guard replaced else { status = .failed; return }
         withheld = skipped
         // What was installed, not a new reading, for the same reason as after an upload.
-        remember(cloud.revision, digest(installed))
+        remember(cloud.revision, installed)
         status = .downloaded(cloud.machines.count)
     }
 
@@ -467,25 +469,55 @@ final class ICloudSync: ObservableObject {
         }
     }
 
-    private func remember(_ revision: String, _ digest: String) {
-        defaults.set(revision, forKey: Self.revisionKey)
-        defaults.set(digest, forKey: Self.digestKey)
+    /// What this device's machines were when it last agreed with iCloud, as salted hashes:
+    /// enough to notice a change, nothing a reader could use.
+    private struct Baseline: Codable {
+        /// The machines' ids, in their order.
+        var ids: [String] = []
+        /// By id: the machine's fields, its secret, its pinned host key. A machine without a
+        /// secret or host key has no entry there.
+        var hosts: [String: String] = [:]
+        var secrets: [String: String] = [:]
+        var pins: [String: String] = [:]
     }
 
-    /// A fingerprint of machines with their secrets and host keys, to notice a local change.
-    /// Salted with a value that never leaves the device, and never uploaded.
-    private func digest(_ machines: [CloudMachines.Machine]) -> String {
+    private func baseline(of machines: [CloudMachines.Machine]) -> Baseline {
         let salt = defaults.string(forKey: Self.saltKey) ?? {
             let fresh = UUID().uuidString
             defaults.set(fresh, forKey: Self.saltKey)
             return fresh
         }()
+        // Salted with a value that never leaves the device.
+        func hash(_ data: Data) -> String {
+            SHA256.hash(data: Data(salt.utf8) + data).map { String(format: "%02x", $0) }.joined()
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
-        var hasher = SHA256()
-        hasher.update(data: Data(salt.utf8))
-        hasher.update(data: (try? encoder.encode(machines)) ?? Data())
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        var result = Baseline()
+        for machine in machines {
+            let id = machine.host.id.uuidString
+            result.ids.append(id)
+            result.hosts[id] = hash((try? encoder.encode(machine.host)) ?? Data())
+            if let secret = machine.secret { result.secrets[id] = hash(Data(secret.utf8)) }
+            if let pin = machine.pin { result.pins[id] = hash(Data(pin.utf8)) }
+        }
+        return result
+    }
+
+    private func remember(_ revision: String, _ machines: [CloudMachines.Machine]) {
+        defaults.set(revision, forKey: Self.revisionKey)
+        defaults.set(try? JSONEncoder().encode(baseline(of: machines)), forKey: Self.baselineKey)
+    }
+
+    /// Whether this device's machines are no longer what it last agreed on. A secret or host
+    /// key the device does not hold is not a change by itself: a restore from a backup brings
+    /// the machines back without them, and that is not an edit. One it holds that differs
+    /// from the agreed one, or that the agreed state did not have, is.
+    private func changed(_ local: [CloudMachines.Machine]) -> Bool {
+        guard let agreed = defaults.data(forKey: Self.baselineKey).flatMap({ try? JSONDecoder().decode(Baseline.self, from: $0) }) else { return true }
+        let now = baseline(of: local)
+        guard now.ids == agreed.ids, now.hosts == agreed.hosts else { return true }
+        return now.secrets.contains { agreed.secrets[$0.key] != $0.value } || now.pins.contains { agreed.pins[$0.key] != $0.value }
     }
 }
 
