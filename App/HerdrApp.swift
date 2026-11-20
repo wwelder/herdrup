@@ -5753,8 +5753,10 @@ struct TerminalPaneContent: View {
     /// moment the pane reports a composer — never typed raw into the still-booting
     /// pane. A non-empty `initialReply` puts the view into the pending-delivery
     /// state.
+    /// `initialReply` is a task: it is sent by itself as soon as the agent can take a prompt.
+    /// `draft` only starts the reply field off and waits for the owner to finish and send it.
     init(client: HerdrClient, paneID: String, title: String, agent: AgentInfo? = nil,
-         initialReply: String = "", isForeground: Bool = true,
+         initialReply: String = "", draft: String = "", isForeground: Bool = true,
          onNavigate: @escaping (Int) -> Void = { _ in }, onClose: @escaping () -> Void = {},
          embedded: Bool = false) {
         self.embedded = embedded
@@ -5765,7 +5767,7 @@ struct TerminalPaneContent: View {
         self.onNavigate = onNavigate
         self.onClose = onClose
         _agent = State(initialValue: agent)
-        _reply = State(initialValue: initialReply)
+        _reply = State(initialValue: initialReply.isEmpty ? draft : initialReply)
         _pendingPrefill = State(initialValue: !initialReply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         _chatModel = StateObject(wrappedValue: ChatModel(target: paneID))
         _showsChat = State(initialValue: ChatPreference.showsChat(paneID: paneID))

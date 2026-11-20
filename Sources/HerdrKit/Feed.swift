@@ -47,6 +47,33 @@ public struct FeedReply: Codable, Sendable, Hashable {
     }
 }
 
+/// The agent that asked a card, as `herdr feed ask` stamped it: where a question about the
+/// card goes. Its pane is in herdr session `session` on the machine that serves the card.
+public struct FeedAsker: Codable, Sendable, Hashable {
+    public let session: String
+    public let paneID: String
+    /// The agent's herdr name; "" when herdr had none for the pane.
+    public let agent: String
+
+    public init(session: String, paneID: String, agent: String) {
+        self.session = session
+        self.paneID = paneID
+        self.agent = agent
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case session, agent
+        case paneID = "pane_id"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let fields = try decoder.container(keyedBy: CodingKeys.self)
+        session = try fields.decode(String.self, forKey: .session)
+        paneID = try fields.decode(String.self, forKey: .paneID)
+        agent = try fields.decodeIfPresent(String.self, forKey: .agent) ?? ""
+    }
+}
+
 /// One card, as the timeline and the reader show it.
 public struct FeedEntry: Identifiable, Codable, Sendable, Hashable {
     /// `source/id`, the file's own name, so read and starred marks survive a rewrite. A card
@@ -74,6 +101,8 @@ public struct FeedEntry: Identifiable, Codable, Sendable, Hashable {
     /// The machine that serves the card, as the app keys its saved machines. Nil for a card
     /// starred before the feed read every machine.
     public var machine: String? = nil
+    /// The agent that asked, for a card from `herdr feed ask`. Nil for a script's card.
+    public var asker: FeedAsker? = nil
 
     /// The id the card had when the feed came from one machine: what older read and starred
     /// marks, and a question push, name it by.
@@ -120,7 +149,8 @@ public enum FeedCards {
             summary: card.summary?.isEmpty == false ? card.summary : nil,
             date: card.date.flatMap(parseDate), link: card.link.flatMap { URL(string: $0) },
             actions: card.actions ?? [], input: card.input, confirm: card.confirm,
-            expires: card.expires.flatMap(parseDate), outcome: card.outcome, reply: reply, machine: machine)
+            expires: card.expires.flatMap(parseDate), outcome: card.outcome, reply: reply, machine: machine,
+            asker: card.asker?.value)
     }
 
     /// Where the owner goes once they have answered `id`, one of the `waiting` cards in the
@@ -168,6 +198,14 @@ public enum FeedCards {
         let confirm: String?
         let expires: String?
         let outcome: String?
+        let asker: Lenient<FeedAsker>?
+    }
+
+    /// A field read when it is well formed and dropped when it is not, so that a card with
+    /// an odd `asker` still shows.
+    private struct Lenient<Value: Decodable>: Decodable {
+        let value: Value?
+        init(from decoder: Decoder) { value = try? Value(from: decoder) }
     }
 
     private struct Reply: Decodable {
