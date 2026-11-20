@@ -673,7 +673,10 @@ public actor HerdrClient {
             // gram-list answer at all (it decoded only because every field is
             // optional), which is exactly the case that used to surface as a
             // DecodingError before conditional fetch made `messages` optional.
-            guard try await gramList().messages != nil else { return .indeterminate }
+            //
+            // One message is enough to tell: the whole store is about a megabyte on a busy
+            // machine, and this runs on every connect.
+            guard try await gramList(limit: 1).messages != nil else { return .indeterminate }
             return .isFork
         } catch let error as APIError {
             if error.code == "gram_unavailable" {
