@@ -12,7 +12,14 @@ final class ClaudeSideAnswerTests: XCTestCase {
 
     """
 
-    func testThePanelIsOpenWhileItsKeyHintsAreTheLastLine() {
+    private let prompt = """
+    ────────────────────────────────────────
+    ❯
+    ────────────────────────────────────────
+      -- INSERT -- ⏵⏵ bypass permissions on (shift+tab to cycle)
+    """
+
+    func testThePanelIsOpenWhileTheScreenEndsWithItsKeyHints() {
         let first = blocked + """
         ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
           /btw what is 9+9? answer with just the number
@@ -32,20 +39,46 @@ final class ClaudeSideAnswerTests: XCTestCase {
 
           ⇧←/→ to browse · c to copy · f to fork · x to clear history · Esc to close
         """
-        XCTAssertTrue(ClaudeSideAnswer.isOpen(screen: first))
-        XCTAssertTrue(ClaudeSideAnswer.isOpen(screen: later), "a later answer adds hints to the line")
+        let answering = blocked + """
+        ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+          /btw what is 4+4? answer with just the number
+          /btw write about 400 words on the history of the tmux terminal multiplexer
+            ✻ Answering…
+          ⇧←/→ to browse · x to clear history · Esc to close
+        """
+        // 52 columns, as on a phone: the hints wrap and a long answer scrolls.
+        let narrow = blocked + """
+        ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+          /btw what is 4+4? answer with just the number
+          /btw write about 400 words on the history of …
+
+            In 2007, Nicholas Marriott began writing a
+            replacement. He was working on OpenBSD at the  ↓
+
+          ↑/↓ to scroll · ⇧←/→ to browse · c to copy · f
+          to fork · x to clear history · Esc to close
+        """
+        let narrowAnswering = blocked + """
+        ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+          /btw what is 4+4? answer with just the number
+          /btw write about 400 words on the history of …
+            ✻ Answering…
+          ⇧←/→ to browse · x to clear history · Esc to
+          close
+        """
+        for screen in [first, later, answering, narrow, narrowAnswering] {
+            XCTAssertTrue(ClaudeSideAnswer.isOpen(screen: screen), screen)
+        }
     }
 
     func testAClosedPanelIsNotOpenEvenWhenTheConversationQuotesItsHints() {
-        let prompt = """
-        ────────────────────────────────────────
-        ❯
-        ────────────────────────────────────────
-          -- INSERT -- ⏵⏵ bypass permissions on (shift+tab to cycle)
-        """
         XCTAssertFalse(ClaudeSideAnswer.isOpen(screen: blocked + prompt))
         XCTAssertFalse(ClaudeSideAnswer.isOpen(
-            screen: "⏺ The panel ends with: c to copy · f to fork · Esc to close\n\n" + prompt))
+            screen: "⏺ Ask with /btw. Its panel ends with:\n  /btw question\n  c to copy · f to fork · Esc to close\n\n" + prompt))
         XCTAssertFalse(ClaudeSideAnswer.isOpen(screen: ""))
+    }
+
+    func testAnotherPanelThatClosesWithEscapeIsNotTheSideAnswer() {
+        XCTAssertFalse(ClaudeSideAnswer.isOpen(screen: blocked + "  Background tasks\n  1 shell running\n  Esc to close"))
     }
 }
