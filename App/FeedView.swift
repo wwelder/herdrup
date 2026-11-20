@@ -281,7 +281,7 @@ final class FeedStore: ObservableObject {
             // The reader offers a written reply on every card. A herdr from before that
             // takes text only on a card that asked for it, and says so in these words.
             failure = error.message == "the card takes no text"
-                ? "The herdr on the feed machine is too old to take a written reply to this card. Update herdr there, or pick one of the card's choices."
+                ? "The herdr on the feed machine is too old to take a written reply to this card. Update herdr there, or clear the reply and pick one of the card's choices."
                 : error.message
         } catch {
             failure = error.localizedDescription
