@@ -3,7 +3,7 @@ import Foundation
 /// Only connection metadata and recipient recency live here. Secrets stay in the
 /// app's existing Keychain access group, shared with the extension by entitlement.
 enum ShareStorage {
-    static let group = "group.com.jerryfane.herdr"
+    static let group = "group.inc.simcast.herdrup"
     static let hostsKey = "dev.herdr.savedHosts.v1"
     static let guestsKey = "dev.herdr.sharedMachines.v1"
     static let recentKey = "dev.herdr.shareRecipients.v1"

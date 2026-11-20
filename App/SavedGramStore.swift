@@ -166,7 +166,7 @@ struct SavedGramRow: View {
 
     var body: some View {
         GramLoneMessage(
-            text: saved.text, sender: saved.from, mine: mine,
+            text: saved.text, mine: mine,
             hasCard: saved.file != nil || saved.expiredFile != nil,
             menu: { menu },
             header: { header },

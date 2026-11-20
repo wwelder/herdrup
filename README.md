@@ -48,8 +48,19 @@ herdr's JSON API exposes both, so panes and agents become real UI objects instea
   password prompt never shows your typing. Auto shows guesses only on a slow link (round trip
   over 30 ms) and underlines unconfirmed ones over 80 ms. Typing latency also reports key to
   prediction and how many guesses were shown, confirmed and wrong.
-- **Gram** — direct messaging between you and your agents: get pinged when one needs input, send text,
-  and share images, videos, or files (several at once) straight to an agent.
+- **Gram** — one conversation with your orchestrator, the long-lived agent that tracks the work on
+  all your machines. It is that agent's own chat page (transcript, composer, terminal behind the
+  switch) on a connection of its own, so it is the same whichever machine is open in Agents.
+  Settings → Gram picks the machine it runs on and its agent name (default `orchestrator`).
+- **Feed** — cards scripts and agents write on your machines (`~/.config/herdr/feeds/<source>/<id>.json`):
+  something to read, or a question with buttons. The feed lives on one machine: agents on every
+  machine push their cards there, and Settings → Feed picks it. The Feed tab then reads only that
+  machine, whichever one is open in Agents. Until one is picked it reads every saved machine into
+  one timeline, names the machine on each card, and sends an answer to the machine that owns the
+  card; a machine that cannot be reached keeps its last cards and is named at the end of the
+  timeline. Only Agents is per machine. Answering an open card moves on to the next card that
+  waits for you, and back to the timeline after the last one; an answer that could not be sent
+  stays on its card.
 - **omp Chat view** — an omp agent's page opens as a conversation read from its session file:
   your prompts as bubbles, its replies in rendered markdown, its thinking and tool steps folded
   into one expandable line, notes, the current checklist and questions you answer with a tap
@@ -109,6 +120,20 @@ herdr's JSON API exposes both, so panes and agents become real UI objects instea
   The sheet uses each machine's remembered herdr session, including named sessions.
   Federated agents use readable machine names. Send stays above the keyboard while you
   search recipients or type a message.
+- **iCloud sync** — off until you turn it on (the connect screen, or Settings → Machines), per
+  device. The machines you pair are then kept in iCloud with their keys and passwords, so
+  another of your devices can connect without pairing again. It is one value in iCloud
+  key-value storage, sealed whole (AES-GCM) with a key that exists only in iCloud Keychain,
+  which is end-to-end encrypted: the machines, their keys and passwords, and the SSH host key
+  verified for each. A device takes a credential only together with the host key it came
+  with: a machine nobody has connected to yet, or one whose host key differs from the one
+  this device trusts, arrives without its key or password.
+  While iCloud shows no machines the app offers Upload and sends nothing by itself; a new
+  device takes iCloud's machines; after that a change on one device goes to the others. When
+  this device and iCloud both changed since they last agreed, or iCloud's copy was not built
+  on the one this device had (two uploads crossed, an older copy came back), the app asks:
+  upload (this device replaces iCloud) or download (iCloud replaces this device). The Gram
+  and Feed machine choices are not synced.
 - **Guest access** — share one agent with someone outside your machines from its ••• menu. They
   get a one-use invite (QR code or link), watch the live terminal and message the agent through
   a relay, end to end encrypted, with every message labelled `<name> (via HerdrUp):`. Settings →
@@ -148,6 +173,11 @@ there is no system libssh2 to install, which is exactly what lets the protocol l
 **[Download on the App Store](https://apps.apple.com/app/id6798087089)** — herdrup is live, free, and
 iPhone + iPad (it also installs on Apple Silicon Macs as a Designed-for-iPad app).
 
+The same app also builds as a Mac app (Mac Catalyst) with the Mac's own interface: drawn 1:1
+instead of as an iPad scaled to 77 %, which is a much lighter window to composite. The Mac build
+has no Live Activity, widgets, notification service or share extension (ActivityKit does not
+exist on the Mac; the extensions are iOS-only for now).
+
 You can also [build it yourself](#building-from-source); it is Apache-2.0 and the whole client is in
 this repository.
 
@@ -163,6 +193,9 @@ brew install xcodegen
 xcodegen generate
 xcodebuild -scheme Herdr -destination 'generic/platform=iOS Simulator' build
 
+# The Mac build (Mac Catalyst). Unsigned it runs with the mocks only: no Keychain, no saved machines.
+xcodebuild -scheme Herdr -destination 'platform=macOS,variant=Mac Catalyst' CODE_SIGNING_ALLOWED=NO build
+
 # The protocol layer, HerdrKit — builds and tests on Linux and macOS
 swift build
 swift test          # live tests run when a herdr socket + sshd are present; skip otherwise
@@ -170,6 +203,13 @@ swift test          # live tests run when a herdr socket + sshd are present; ski
 # The vendored terminal core — also Linux-buildable
 swift test --package-path Vendor/SwiftTerm
 ```
+
+For a live check in the simulator, a Debug build launched with
+`HERDR_DEBUG_SEED_HOST="label|user|host|/path/to/ed25519/key"` saves that machine once, without its
+key being typed into the host editor (`SIMCTL_CHILD_HERDR_DEBUG_SEED_HOST=…` with `simctl launch`).
+Build it signed ("Sign to Run Locally", the default): with `CODE_SIGNING_ALLOWED=NO` the simulator
+app has no Keychain and no app group, so it shows no saved machines, and installing such a build
+over a signed one drops the machines that were saved.
 
 `HerdrKit` contains no UIKit or SwiftUI, so it stays Linux-buildable and can be exercised against a real
 herdr server; the iOS app consumes it unchanged. Floors: macOS 14+, iOS 17+ (declared in `Package.swift`

@@ -54,6 +54,26 @@ final class AgentGroupsTests: XCTestCase {
                        "stars sort within a state, not above everything")
     }
 
+    /// The All view lists other herdr sessions' agents beside the connected one's. Pane ids
+    /// repeat across sessions, and stars/folders belong to the connected session only.
+    func testAnotherSessionsAgentKeepsItsOwnIdentityAndIgnoresThisSessionsStars() throws {
+        let here = try agent("vetrina", "blocked")
+        let there = here.inSession("top-l")
+        XCTAssertEqual(here.id, "p-vetrina")
+        XCTAssertEqual(there.id, "top-l/p-vetrina", "same pane id in another session is another row")
+        XCTAssertEqual(there.paneID, here.paneID, "requests still address the session's own pane id")
+
+        let list = AgentList(agents: [here, there], livePaneIDs: nil)
+        let doc = AgentGroupsDocument(stars: ["vetrina"])
+        let layout = AgentFolderLayout(sections: list.sections, groups: doc, openFolders: [])
+        let rows = layout.sections[0].items.compactMap { item -> (String, Bool)? in
+            if case .agent(let row, let starred, _) = item { return (row.info.id, starred) }
+            return nil
+        }
+        XCTAssertEqual(rows.map(\.0), ["p-vetrina", "top-l/p-vetrina"])
+        XCTAssertEqual(rows.map(\.1), [true, false], "only the connected session's agent is starred")
+    }
+
     func testClosedFolderSitsInItsMostUrgentStateAndCountsItsAgents() throws {
         let list = try list(roster, stopped: ["enyo-efm"])
         let doc = AgentGroupsDocument(folders: [enyo])

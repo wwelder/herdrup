@@ -55,13 +55,6 @@ final class DesktopReferenceShots: XCTestCase {
         capture(app, device: device, state: "populated")
     }
 
-    func testIdleExpanded() throws {
-        let (app, device) = try launch("populated")
-        assertDefaultRoster(app)
-        expand(app, "Idle, 2", showing: [row(app, "w2:p2"), row(app, "w2:p3")])
-        capture(app, device: device, state: "idle-expanded")
-    }
-
     func testArchivedExpanded() throws {
         let (app, device) = try launch("populated")
         assertDefaultRoster(app)
@@ -72,10 +65,7 @@ final class DesktopReferenceShots: XCTestCase {
     func testAllExpanded() throws {
         let (app, device) = try launch("populated")
         assertDefaultRoster(app)
-        // Archived first: it is the last row, so opening Idle first could push it below
-        // the 11-inch fold before it is tapped.
         expand(app, "Archived, 1", showing: [app.staticTexts["old-spike"]])
-        expand(app, "Idle, 2", showing: [row(app, "w2:p2"), row(app, "w2:p3")])
         capture(app, device: device, state: "all-expanded")
     }
 
@@ -140,18 +130,16 @@ final class DesktopReferenceShots: XCTestCase {
     }
 
     /// The fixture as the roster first draws it: needs you (api-review, docs), the
-    /// unreachable studio/render, working (web, infra), then Idle and Archived closed.
+    /// unreachable studio/render, working (web, infra), idle (release, w2:p3), then
+    /// Archived closed.
     private func assertDefaultRoster(_ app: XCUIApplication) {
         let roster = app.descendants(matching: .any)["agent-roster-scroll"]
         XCTAssertTrue(roster.waitForExistence(timeout: 20), "the roster should load")
-        for pane in ["w1:p1", "w1:p2", "studio/w1:p4", "w1:p3", "w2:p1"] {
+        for pane in ["w1:p1", "w1:p2", "studio/w1:p4", "w1:p3", "w2:p1", "w2:p2", "w2:p3"] {
             XCTAssertTrue(row(app, pane).waitForExistence(timeout: 10), "\(pane) should be listed")
         }
-        XCTAssertTrue(app.buttons["Idle, 2"].exists, "Idle should be a closed row of two")
-        XCTAssertEqual(app.buttons["Idle, 2"].value as? String, "collapsed")
         XCTAssertTrue(app.buttons["Archived, 1"].exists, "Archived should be a closed row of one")
         XCTAssertEqual(app.buttons["Archived, 1"].value as? String, "collapsed")
-        XCTAssertFalse(row(app, "w2:p2").exists, "closed Idle should hide release")
         XCTAssertFalse(app.activityIndicators.firstMatch.exists, "a loaded roster shows no spinner")
     }
 

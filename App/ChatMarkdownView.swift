@@ -18,7 +18,7 @@ struct ChatMarkdownView: View {
     private var blocks: [ChatMarkdownBlock] { ChatMarkdownCache.blocks(markdown) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: tone.blockSpacing) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 blockView(block)
             }
@@ -35,10 +35,10 @@ struct ChatMarkdownView: View {
                 .lineSpacing(3 * textScale)
                 .fixedSize(horizontal: false, vertical: true)
         case .heading(let level, let text):
-            Text(ChatInline.styled(text, size: (level == 1 ? 23 : level == 2 ? 20 : 17) * textScale, weight: .semibold, dim: dim))
+            Text(ChatInline.styled(text, size: tone.headingSize(level) * textScale, weight: .semibold, dim: dim))
                 .foregroundStyle(dim ? tone.ink : Color(hex: ChatPalette.current.heading))
                 .lineSpacing(2)
-                .padding(.top, 4)
+                .padding(.top, tone.headingGap)
                 .fixedSize(horizontal: false, vertical: true)
         case .list(let ordered, let start, let items):
             VStack(alignment: .leading, spacing: 6) {
@@ -94,11 +94,37 @@ struct ChatMarkdownView: View {
 enum ChatMarkdownTone: Equatable {
     case reply
     case thought
+    /// A Feed card, read as an article rather than as a turn in a conversation: a step
+    /// larger, with more air between blocks and above a heading, and headings further apart
+    /// in size, so the card's sections can be found at a glance.
+    case article
 
     var ink: Color { self == .thought ? Palette.textDim : Palette.text }
     /// List markers and checkboxes: one tier under the text.
     var marker: Color { self == .thought ? Palette.textFaint : Palette.textDim }
-    var scale: CGFloat { self == .thought ? 15.0 / 16.0 : 1 }
+    var scale: CGFloat {
+        switch self {
+        case .reply: return 1
+        case .thought: return 15.0 / 16.0
+        case .article: return 17.0 / 16.0
+        }
+    }
+    /// The gap between two blocks.
+    var blockSpacing: CGFloat { self == .article ? 12 : 8 }
+    /// The extra gap above a heading.
+    var headingGap: CGFloat { self == .article ? 14 : 4 }
+    /// A heading's size before `scale`. In a reply the third level is one point over the
+    /// text; in an article that is too little to see a section by.
+    func headingSize(_ level: Int) -> CGFloat {
+        switch (self == .article, level) {
+        case (true, 1): return 24
+        case (true, 2): return 21
+        case (true, _): return 18
+        case (false, 1): return 23
+        case (false, 2): return 20
+        case (false, _): return 17
+        }
+    }
 }
 
 /// Fit ordinary tables to the chat width; scroll only when readable columns cannot fit.

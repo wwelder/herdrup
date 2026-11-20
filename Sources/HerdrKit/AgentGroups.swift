@@ -260,7 +260,10 @@ public struct AgentFolderLayout: Equatable, Sendable {
                 groups: AgentGroupsDocument?, openFolders: Set<String>) {
         let groups = groups ?? AgentGroupsDocument()
         let stars = Set(groups.stars)
-        func starred(_ row: AgentRow) -> Bool { row.info.name.map(stars.contains) ?? false }
+        // Stars and folders belong to the connected session's server: a row listed from
+        // another session (`AgentInfo.session`) is never matched by name against them.
+        func groupName(_ row: AgentRow) -> String? { row.info.session == nil ? row.info.name : nil }
+        func starred(_ row: AgentRow) -> Bool { groupName(row).map(stars.contains) ?? false }
         func starredFirst(_ rows: [AgentRow]) -> [AgentRow] {
             rows.filter(starred) + rows.filter { !starred($0) }
         }
@@ -270,7 +273,7 @@ public struct AgentFolderLayout: Equatable, Sendable {
         for folder in groups.orderedFolders {
             for member in folder.members where folderOf[member] == nil { folderOf[member] = folder.id }
         }
-        func folderID(_ row: AgentRow) -> String? { row.info.name.flatMap { folderOf[$0] } }
+        func folderID(_ row: AgentRow) -> String? { groupName(row).flatMap { folderOf[$0] } }
 
         // Folder members, most urgent first: the sections are already in state order.
         var membersByFolder: [String: [AgentRow]] = [:]

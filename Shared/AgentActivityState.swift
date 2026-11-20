@@ -61,8 +61,14 @@ struct AgentActivityState: Codable, Hashable {
     var defaultAnswer: String?
     /// Stable pane identifier used by the activity's deep link.
     var agentID: String?
+    /// The herdr session `agentID` lives in, when herdr pushed it: after its machine-wide
+    /// merge the lead may be in a session the app is not on. Nil means the app's own.
+    var session: String?
     /// When this snapshot was produced (Unix seconds), for honest stale-state copy.
     var updatedAt: Double?
+    /// The machine's tool calls per minute over the last five minutes, as the wezterm status
+    /// bar shows it. Only herdr's push measures it; nil until a push carries it.
+    var apm: Double?
 
     /// Hand-written because additive metadata and enum cases must not make an existing
     /// Live Activity undecodable. ActivityKit drops an undecodable activity, so it could
@@ -92,7 +98,9 @@ struct AgentActivityState: Codable, Hashable {
         question = try c.decodeIfPresent(String.self, forKey: .question)
         defaultAnswer = try c.decodeIfPresent(String.self, forKey: .defaultAnswer)
         agentID = try c.decodeIfPresent(String.self, forKey: .agentID)
+        session = try c.decodeIfPresent(String.self, forKey: .session)
         updatedAt = try c.decodeIfPresent(Double.self, forKey: .updatedAt)
+        apm = try c.decodeIfPresent(Double.self, forKey: .apm)
     }
 
     /// Restored because writing `init(from:)` suppresses the synthesized memberwise
@@ -100,7 +108,7 @@ struct AgentActivityState: Codable, Hashable {
     init(headline: String, status: AgentActivityStatus, needsYouCount: Int, unconfirmedCount: Int = 0,
          workingCount: Int, totalCount: Int, workingSince: Double?, blockedSince: Double? = nil,
          question: String? = nil, defaultAnswer: String? = nil, agentID: String? = nil,
-         updatedAt: Double? = nil) {
+         session: String? = nil, updatedAt: Double? = nil, apm: Double? = nil) {
         self.headline = headline
         self.status = status
         self.needsYouCount = needsYouCount
@@ -112,7 +120,9 @@ struct AgentActivityState: Codable, Hashable {
         self.question = question
         self.defaultAnswer = defaultAnswer
         self.agentID = agentID
+        self.session = session
         self.updatedAt = updatedAt
+        self.apm = apm
     }
 
     /// Whether the status mark should render HOLLOW: every waiting agent rests on a state
@@ -138,24 +148,61 @@ struct AgentActivityState: Codable, Hashable {
     /// `stale-date`. So the hedged headline, the hollow mark and the "no recent update"
     /// line rendered in tests and never on a device. They are gone rather than kept as
     /// scenery; if a real liveness signal ever lands, restore them WITH it.
+    ///
+    /// With nothing waiting, the headline is the machine's metrics rather than the
+    /// owner's rejected "Nothing needs you".
     var presentationHeadline: String {
-        if needsYouCount == 0, totalCount > 0, status == .idle || status == .working {
-            return "Nothing needs you"
-        }
+        if showsMetricsHeadline { return metricsLine }
         return headline
+    }
+
+    var showsMetricsHeadline: Bool {
+        needsYouCount == 0 && totalCount > 0 && (status == .idle || status == .working)
+    }
+
+    /// "APM:3.2 Running:4 Blocked:0", the owner's wording; APM drops out until herdr has
+    /// pushed one.
+    var metricsLine: String {
+        let counts = "Running:\(workingCount) Blocked:\(needsYouCount)"
+        guard let apmText else { return counts }
+        return "APM:\(apmText) \(counts)"
+    }
+
+    /// The faint line under the headline: the metrics, unless the headline already is them.
+    var fleetLine: String {
+        showsMetricsHeadline ? "\(totalCount) agents" : metricsLine
+    }
+
+    var apmText: String? { Self.apmText(apm) }
+
+    /// One decimal below 100, whole above; nil when unknown. The home-screen widget uses it too.
+    static func apmText(_ apm: Double?) -> String? {
+        guard let apm, apm.isFinite, apm >= 0 else { return nil }
+        return apm < 100 ? String(format: "%.1f", apm) : String(Int(apm.rounded()))
     }
 }
 
 enum AgentActivityDeepLink {
     private static let fallback = URL(string: "herdrup://agents")!
 
-    static func url(agentID: String?) -> URL {
+    /// `session` names the herdr session the pane lives in (pane ids repeat across
+    /// sessions); nil is whichever session the app is on.
+    static func url(agentID: String?, session: String? = nil) -> URL {
         guard let agentID, !agentID.isEmpty else { return fallback }
         var components = URLComponents()
         components.scheme = "herdrup"
         components.host = "agent"
         components.path = "/\(agentID)"
+        if let session, !session.isEmpty {
+            components.queryItems = [URLQueryItem(name: "session", value: session)]
+        }
         return components.url ?? fallback
+    }
+
+    static func session(from url: URL) -> String? {
+        URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?.first { $0.name == "session" }?.value
+            .flatMap { $0.isEmpty ? nil : $0 }
     }
 
     static func agentID(from url: URL) -> String? {

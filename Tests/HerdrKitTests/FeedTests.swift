@@ -1,0 +1,99 @@
+import XCTest
+@testable import HerdrKit
+
+/// The feed reads the cards scripts write, and the owner's answers herdr records beside them.
+final class FeedTests: XCTestCase {
+    private let question = """
+    {"title":"Add to the knowledge graph?","body":"## Notes\\nMixture-of-Depths","date":"2026-11-05T09:00:00+08:00",
+     "actions":[{"id":"add","label":"Add to KG"},{"id":"skip","label":"Skip","role":"destructive"}],
+     "input":"Why?","confirm":"Add it?","expires":"2026-11-06T00:00:00.500Z"}
+    """
+
+    func testAQuestionIsPendingUntilAnsweredSettledOrExpired() throws {
+        let card = try FeedCards.entry(FeedCardFile(source: "kg", id: "mod", card: question))
+        XCTAssertEqual(card.id, "kg/mod")
+        XCTAssertEqual(card.title, "Add to the knowledge graph?")
+        XCTAssertEqual(card.body, "## Notes\nMixture-of-Depths")
+        XCTAssertEqual(card.date, Date(timeIntervalSince1970: 1_793_840_400))
+        XCTAssertEqual(card.actions.map(\.id), ["add", "skip"])
+        XCTAssertTrue(card.actions[1].isDestructive)
+        XCTAssertEqual(card.input, "Why?")
+        XCTAssertNotNil(card.expires)
+        let before = Date(timeIntervalSince1970: 1_793_908_800)
+        XCTAssertTrue(card.isPending(at: before))
+        XCTAssertFalse(card.isPending(at: card.expires!), "an expired card asks no more")
+
+        let answered = try FeedCards.entry(FeedCardFile(
+            source: "kg", id: "mod", card: question,
+            reply: #"{"action":"skip","text":"seen it","at":"2026-11-05T12:00:00Z"}"#))
+        XCTAssertFalse(answered.isPending(at: before))
+        XCTAssertEqual(answered.replySummary, "Skip · “seen it”")
+        XCTAssertEqual(answered.reply?.at, Date(timeIntervalSince1970: 1_793_880_000))
+
+        let settled = try FeedCards.entry(FeedCardFile(
+            source: "kg", id: "x", card: #"{"title":"t","actions":[{"id":"a","label":"A"}],"outcome":"Handled on the Mac"}"#))
+        XCTAssertFalse(settled.isPending(at: before))
+    }
+
+    func testAnUpdateAsksNothingAndFallsBackToItsFileName() throws {
+        let card = try FeedCards.entry(FeedCardFile(source: "oura", id: "2026-11-04", card: #"{"body":"Sleep 84"}"#))
+        XCTAssertFalse(card.asks)
+        XCTAssertFalse(card.isPending())
+        XCTAssertEqual(card.title, "2026-11-04")
+        XCTAssertNil(card.date)
+        XCTAssertNil(card.replySummary)
+    }
+
+    func testACardAnAgentAskedNamesTheAgent() throws {
+        let asked = try FeedCards.entry(FeedCardFile(
+            source: "agents", id: "ask-1",
+            card: #"{"title":"Ship it?","input":"","asker":{"session":"work","pane_id":"w1:p2","agent":"jarvis"}}"#))
+        XCTAssertEqual(asked.asker, FeedAsker(session: "work", paneID: "w1:p2", agent: "jarvis"))
+        // It survives being saved with a starred card.
+        let saved = try JSONDecoder().decode(FeedEntry.self, from: JSONEncoder().encode(asked))
+        XCTAssertEqual(saved.asker, asked.asker)
+        // A pane herdr had no name for.
+        let unnamed = try FeedCards.entry(FeedCardFile(
+            source: "agents", id: "ask-2", card: #"{"title":"t","asker":{"session":"default","pane_id":"w1:p9"}}"#))
+        XCTAssertEqual(unnamed.asker?.agent, "")
+        // A script's card has no asker, and an odd one does not cost the card.
+        XCTAssertNil(try FeedCards.entry(FeedCardFile(source: "fleet", id: "q", card: #"{"title":"t"}"#)).asker)
+        let odd = try FeedCards.entry(FeedCardFile(source: "agents", id: "x", card: #"{"title":"t","asker":"jarvis"}"#))
+        XCTAssertEqual(odd.title, "t")
+        XCTAssertNil(odd.asker)
+    }
+
+    func testACardFromOneOfSeveralMachinesIsNamedByItsMachine() throws {
+        let file = FeedCardFile(source: "agents", id: "ask-1", card: #"{"title":"Ship it?"}"#)
+        let a = try FeedCards.entry(file, machine: "A")
+        let b = try FeedCards.entry(file, machine: "B")
+        XCTAssertEqual(a.id, "A|agents/ask-1")
+        XCTAssertNotEqual(a.id, b.id)
+        XCTAssertEqual(a.machine, "A")
+        XCTAssertEqual(a.legacyID, "agents/ask-1")
+        XCTAssertEqual(try FeedCards.entry(file).id, "agents/ask-1")
+        // A card starred before cards had a machine still decodes.
+        let old = #"{"id":"agents/ask-1","source":"agents","cardID":"ask-1","title":"t","body":"","actions":[]}"#
+        XCTAssertNil(try JSONDecoder().decode(FeedEntry.self, from: Data(old.utf8)).machine)
+    }
+
+    func testSomethingElseIsNotACard() {
+        XCTAssertThrowsError(try FeedCards.entry(FeedCardFile(source: "a", id: "b", card: "[1]")))
+        XCTAssertThrowsError(try FeedCards.entry(FeedCardFile(source: "a", id: "b", card: nil, error: "too big")))
+    }
+
+    func testAnAnsweredCardHandsOverToTheNextWaitingOne() throws {
+        let waiting = try ["a", "b", "c"].map { try FeedCards.entry(FeedCardFile(source: "kg", id: $0, card: question)) }
+        XCTAssertEqual(FeedCards.next(after: "kg/a", in: waiting)?.cardID, "b")
+        XCTAssertEqual(FeedCards.next(after: "kg/c", in: waiting)?.cardID, "a", "after the last, the first")
+        XCTAssertEqual(FeedCards.next(after: "kg/x", in: waiting)?.cardID, "a", "a card outside the list: the first")
+        XCTAssertNil(FeedCards.next(after: "kg/a", in: [waiting[0]]), "no other card waits")
+    }
+
+    func testNewestFirstKeepsUndatedCardsLast() throws {
+        let cards = try [#"{"title":"u"}"#, #"{"title":"old","date":"2026-11-03T07:00:00Z"}"#,
+                         #"{"title":"new","date":"2026-11-04T07:00:00Z"}"#]
+            .enumerated().map { try FeedCards.entry(FeedCardFile(source: "s", id: "\($0.offset)", card: $0.element)) }
+        XCTAssertEqual(FeedCards.newestFirst(cards).map(\.title), ["new", "old", "u"])
+    }
+}

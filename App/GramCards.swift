@@ -33,10 +33,11 @@ enum GramCardMetrics {
         return max(regularCardWidth, column * (incoming ? incomingColumnShare : outgoingColumnShare))
     }
 
-    /// An image card's size CAP: 295 x 124 on a phone, 440 x 236 on iPad/Mac. A narrower
-    /// column scales it down at this aspect ratio.
+    /// An image card's size CAP: the widest phone's width by 560 on a phone, 720 square on
+    /// iPad/Mac. A picture fits inside at its own shape, so a wide one spans the column and a
+    /// tall one keeps its full height at a narrower width.
     static func imageSize(_ sizeClass: UserInterfaceSizeClass?) -> CGSize {
-        sizeClass == .regular ? CGSize(width: 440, height: 236) : CGSize(width: 295, height: 124)
+        sizeClass == .regular ? CGSize(width: 720, height: 720) : CGSize(width: 430, height: 560)
     }
 }
 
@@ -308,23 +309,6 @@ struct GramFoldingText: View {
 
 // MARK: - Bubbles
 
-extension View {
-    /// The bubble's tail (`BubbleTail`) behind a part that ends in text, curving out of the
-    /// bottom corner on the sender's side, in the side's fill. `shown` false draws nothing.
-    func gramBubbleTail(mine: Bool, shown: Bool) -> some View {
-        background(alignment: mine ? .bottomTrailing : .bottomLeading) {
-            if shown {
-                BubbleTail()
-                    .fill(mine ? GramBubble.outFill : GramBubble.inFill)
-                    .frame(width: 24, height: 22)
-                    .scaleEffect(x: mine ? -1 : 1, y: 1)
-                    .offset(x: mine ? 6 : -6)
-                    .accessibilityHidden(true)
-            }
-        }
-    }
-}
-
 /// A message's text and its card file (a document, or a file the store expired), as every
 /// Gram page draws them: a plain bubble for prose alone, a card (the whole width the caller's
 /// `gramBubbleWidth` cap offers) once there is code or a file, and the bare file card for a
@@ -337,9 +321,12 @@ struct GramTextPart<Card: View>: View {
     let isExpanded: (Int) -> Binding<Bool>
     @ViewBuilder let card: (_ embedded: Bool) -> Card
 
-    private var fill: Color { mine ? GramBubble.outFill : GramBubble.inFill }
-    private var bubbleShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: GramBubble.radius, style: .continuous)
+    /// Claude Code's grey for both sides; yours tucks its bottom trailing corner in.
+    private var fill: Color { GramBubble.inFill }
+    private var bubbleShape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(topLeadingRadius: GramBubble.radius, bottomLeadingRadius: GramBubble.radius,
+                               bottomTrailingRadius: mine ? 6 : GramBubble.radius,
+                               topTrailingRadius: GramBubble.radius, style: .continuous)
     }
 
     var body: some View {
@@ -384,29 +371,19 @@ struct GramTextPart<Card: View>: View {
         }
     }
 
-    /// Your text in `onAccent` on the violet fill, an agent's in the body ink; links and the
-    /// Read more line tinted to match.
+    /// The body ink on the grey fill, links and the Read more line in the brand violet.
     private func prose(_ text: String, index: Int) -> some View {
-        GramFoldingText(
-            text: linkified(text, tint: mine ? Palette.onAccent : Palette.brand),
-            isExpanded: isExpanded(index),
-            toggleTint: mine ? Palette.onAccent : Palette.brand
-        )
-        .foregroundStyle(mine ? Palette.onAccent : Palette.text)
+        GramFoldingText(text: linkified(text), isExpanded: isExpanded(index))
+            .foregroundStyle(Palette.text)
     }
 }
 
-/// A message drawn outside the inbox's feed (a Saved copy, a guest's Gram) with the inbox's
-/// parts: the sender's `GramAvatar` beside an agent's message, the text part
-/// (`GramTextPart`) in its side's fill with the tail, and the file as the inbox's file or
-/// expired card. Never grouped: each stands alone, so every agent message carries its avatar
-/// and every part that ends in text its tail. Your messages sit on the right, without an
-/// avatar, as in the inbox. `header` is the page's line above the bubble (who, when, and the
-/// page's own controls); `menu` is the bubble's long-press menu.
+/// A message drawn outside the inbox's feed (a Saved copy) as the inbox draws it: an agent's
+/// text as markdown across the column and its file card below, yours as the grey bubble on the
+/// right (`GramTextPart`). `header` is the page's line above it (who, when, and the page's own
+/// controls); `menu` is the long-press menu.
 struct GramLoneMessage<Header: View, Card: View>: View {
     let text: String
-    /// The sender as `GramAvatar` takes it (a federated `<machine>/<name>` shows its name).
-    let sender: String
     let mine: Bool
     let hasCard: Bool
     let menu: () -> [StableMenuItem]
@@ -420,19 +397,25 @@ struct GramLoneMessage<Header: View, Card: View>: View {
 
     var body: some View {
         let segments = GramText.segments(text)
-        VStack(alignment: mine ? .trailing : .leading, spacing: 2) {
+        VStack(alignment: mine ? .trailing : .leading, spacing: 6) {
             header()
-                .padding(mine ? .trailing : .leading, mine ? 2 : GramBubble.groupIndent + 12)
-            HStack(alignment: .bottom, spacing: GramBubble.groupIndent - GramBubble.avatarSize) {
-                if !mine {
-                    GramAvatar(name: sender, size: GramBubble.avatarSize)
-                }
+                .padding(mine ? .trailing : .leading, 2)
+            if mine {
                 if !segments.isEmpty || hasCard {
-                    GramTextPart(segments: segments, mine: mine, hasCard: hasCard,
+                    GramTextPart(segments: segments, mine: true, hasCard: hasCard,
                                  isExpanded: isExpanded, card: card)
-                        .gramBubbleTail(mine: mine, shown: !segments.isEmpty && !hasCard)
                         .stableContextMenu(previewCornerRadius: GramBubble.radius, items: menu)
-                        .gramBubbleWidth(incoming: !mine, sizeClass: sizeClass)
+                        .gramBubbleWidth(incoming: false, sizeClass: sizeClass)
+                }
+            } else {
+                if !text.isEmpty {
+                    ChatMarkdownView(markdown: text)
+                        .stableContextMenu(previewCornerRadius: GramBubble.radius, items: menu)
+                }
+                if hasCard {
+                    card(false)
+                        .stableContextMenu(previewCornerRadius: GramBubble.radius, items: menu)
+                        .gramBubbleWidth(incoming: true, sizeClass: sizeClass)
                 }
             }
         }
@@ -696,8 +679,8 @@ struct GramImageCard: View {
 /// draws its picture on its first frame instead of decoding it again.
 enum GramThumbnails {
     /// The narrowest and widest shapes a picture card takes; a picture beyond them is
-    /// cropped, so a tall screenshot or a panorama never draws as a sliver.
-    static let minAspect: CGFloat = 3.0 / 4.0
+    /// cropped, so only a scroll-length capture or a panorama never draws as a sliver.
+    static let minAspect: CGFloat = 0.4
     static let maxAspect: CGFloat = 4
 
     private static let memory: NSCache<NSString, UIImage> = {
@@ -985,14 +968,12 @@ struct GramTimeSeparator: View {
     }
 }
 
-/// The amber "N unread" rule above the first unread message.
+/// The amber "New" rule above the first unread message. No count: Gram counts contacts, not messages.
 struct GramUnreadRule: View {
-    let count: Int
-
     var body: some View {
         HStack(spacing: 8) {
             line
-            Text("\(count) unread")
+            Text("New")
                 .font(Typography.app(11, .semibold))
                 .foregroundStyle(Palette.waiting)
                 .lineLimit(1)
@@ -1000,7 +981,7 @@ struct GramUnreadRule: View {
             line
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(count) unread")
+        .accessibilityLabel("New messages")
     }
 
     private var line: some View {
@@ -1101,5 +1082,175 @@ struct GramConversationRow: View {
             .frame(width: 44, height: 44)
             .background(Palette.surfaceRaised, in: Circle())
             .accessibilityHidden(true)
+    }
+}
+
+/// herdr's own entry about the conversation's agent: its question, its recap, its exit. Laid
+/// out like a Claude Code turn: the owner's prompt as their grey bubble, a status line whose
+/// dot and word say which (amber waiting, grey answered, green finished, red exited) and
+/// which opens the agent's pane, then the text as markdown across the column.
+struct GramEventRow: View, Equatable {
+    let message: GramMessage
+    var showsStatus = true
+    /// Compared in `==` for the same reason as `GramRow.fontScale`.
+    var fontScale: Double = 1
+    var onOpen: () -> Void
+    @Environment(\.horizontalSizeClass) private var sizeClass
+
+    nonisolated static func == (lhs: GramEventRow, rhs: GramEventRow) -> Bool {
+        lhs.message == rhs.message && lhs.showsStatus == rhs.showsStatus && lhs.fontScale == rhs.fontScale
+    }
+
+    private var tint: Color {
+        switch message.kind {
+        case .blocked: return message.resolved ? Palette.textFaint : Palette.waiting
+        case .died: return Palette.died
+        case .recap, nil: return Palette.done
+        }
+    }
+
+    private var label: String {
+        switch message.kind {
+        case .blocked: return message.resolved ? "Answered" : "Waiting for you"
+        case .died: return "Exited"
+        case .recap, nil: return "Finished"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let prompt = message.prompt {
+                Text(verbatim: prompt)
+                    .font(GramType.body)
+                    .foregroundStyle(Palette.text)
+                    .lineLimit(8)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(GramBubble.inFill, in: UnevenRoundedRectangle(
+                        topLeadingRadius: GramBubble.radius, bottomLeadingRadius: GramBubble.radius,
+                        bottomTrailingRadius: 6, topTrailingRadius: GramBubble.radius, style: .continuous))
+                    .gramBubbleWidth(incoming: false, sizeClass: sizeClass)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .padding(.bottom, 8)
+                    .accessibilityLabel("You: \(prompt)")
+            }
+            if showsStatus { status }
+            ChatMarkdownView(markdown: message.text)
+                .opacity(message.resolved ? 0.6 : 1)
+        }
+    }
+
+    private var status: some View {
+        Button(action: onOpen) {
+            HStack(spacing: 6) {
+                Circle().fill(tint).frame(width: 7, height: 7)
+                Text(verbatim: label)
+                    .font(Typography.app(13, .semibold))
+                    .foregroundStyle(tint == Palette.textFaint ? Palette.textDim : tint)
+                if message.paneID != nil {
+                    Text("Open")
+                        .font(Typography.app(13))
+                        .foregroundStyle(Palette.textDim)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Palette.textFaint)
+                }
+            }
+            .frame(minHeight: 28)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(message.paneID == nil)
+        .accessibilityElement(children: .combine)
+        .accessibilityHint(message.paneID == nil ? "" : "Opens the agent")
+        .accessibilityIdentifier("gram-event-\(message.id)")
+    }
+}
+
+extension GramContact {
+    /// Amber waiting, blue working (background shells and subagents count), red died;
+    /// none for an idle or gone agent, so the dot only shows when something is happening.
+    var statusTint: Color? {
+        if waiting { return Palette.waiting }
+        guard let agent else { return last?.kind == .died ? Palette.died : nil }
+        return agent.agentStatus == "working" || agent.background != nil ? Palette.working : nil
+    }
+}
+
+/// One agent in Gram's contact list, like a Messages row: avatar with its status dot, task
+/// name and folder, the latest message and when, and a dot while anything in it is unread.
+struct GramContactRow: View {
+    let contact: GramContact
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Group {
+                if contact.key == .queue {
+                    Image(systemName: "tray.and.arrow.down")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Palette.textDim)
+                        .frame(width: 42, height: 42)
+                        .background(Palette.surfaceRaised, in: Circle())
+                } else {
+                    GramAvatar(name: contact.name, size: 42)
+                        .overlay(alignment: .bottomTrailing) {
+                            if let tint = contact.statusTint {
+                                Circle().fill(tint).frame(width: 12, height: 12)
+                                    .overlay(Circle().stroke(Palette.ground, lineWidth: 2))
+                            }
+                        }
+                }
+            }
+            .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(verbatim: contact.name)
+                        .font(Typography.app(15, .semibold))
+                        .foregroundStyle(contact.agent == nil && contact.key != .queue ? Palette.textDim : Palette.text)
+                        .lineLimit(1)
+                    if let folder = contact.folder {
+                        Text(verbatim: folder)
+                            .font(Typography.app(12))
+                            .foregroundStyle(Palette.textFaint)
+                            .lineLimit(1)
+                            .layoutPriority(-1)
+                    }
+                    Spacer(minLength: 4)
+                    if let last = contact.last {
+                        Text(verbatim: GramDates.rowTime(for: last.createdAt))
+                            .font(Typography.app(12))
+                            .foregroundStyle(contact.unread > 0 ? Palette.text : Palette.textFaint)
+                    }
+                }
+                HStack(alignment: .top, spacing: 6) {
+                    Text(verbatim: preview)
+                        .font(Typography.app(13))
+                        .foregroundStyle(contact.waiting ? Palette.waiting : Palette.textDim)
+                        .lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if contact.unread > 0 {
+                        Circle().fill(Palette.waiting).frame(width: 10, height: 10)
+                            .padding(.top, 4)
+                            .accessibilityLabel("Unread")
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("gram-contact-\(contact.id)")
+    }
+
+    private var preview: String {
+        if contact.waiting, let ask = contact.agent?.pendingRequest ?? contact.last.flatMap({ $0.kind == .blocked ? $0.text : nil }) {
+            return ask
+        }
+        guard let last = contact.last else { return "No messages yet" }
+        // As the thread draws it, markdown syntax gone, on the row's two lines.
+        let text = last.text.isEmpty ? (last.attachmentPreview ?? "")
+            : ChatMessageText.plain(last.text).replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        return last.isFromAgent ? text : "You: \(text)"
     }
 }

@@ -246,20 +246,22 @@ public enum PushTapTarget: Equatable, Sendable {
     case guest(GuestPushRoute)
     /// A guest push without a usable host: drop the tap.
     case droppedGuest
-    /// The owner's Gram page.
-    case ownerGram
-    /// The owner's pane.
-    case ownerPane(String)
+    /// A feed card an agent asked about (`feed`: `<source>/<id>`): open it to answer.
+    case ownerFeed(String)
+    /// The owner's pane, and the herdr session that sent the push (herdr's `session`; nil from
+    /// servers older than the field): pane ids repeat across sessions. A gram names the pane of
+    /// the local agent that sent it; a relayed gram names none and opens nothing.
+    case ownerPane(String, session: String? = nil)
     /// Nothing to open.
     case none
 
     public init(userInfo: [AnyHashable: Any]) {
         if userInfo["herdr_guest"] != nil {
             self = GuestPushRoute(userInfo: userInfo).map(PushTapTarget.guest) ?? .droppedGuest
-        } else if userInfo["gram"] as? Bool == true {
-            self = .ownerGram
+        } else if let feed = userInfo["feed"] as? String, !feed.isEmpty {
+            self = .ownerFeed(feed)
         } else if let paneID = userInfo["pane_id"] as? String, !paneID.isEmpty {
-            self = .ownerPane(paneID)
+            self = .ownerPane(paneID, session: userInfo["session"] as? String)
         } else {
             self = .none
         }

@@ -207,7 +207,11 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
         launch("control"); focusTerminal()
         cap("terminal-ctrl").tap()
         XCTAssertTrue(armed)
-        onscreen("Dictate", timeout: 5)?.tap()
+        // The pane mic is Claude Code's own voice over SSH; the mock pane has neither.
+        guard let mic = onscreen("Dictate", timeout: 5) else {
+            throw XCTSkip("only a Claude agent on an SSH machine shows the pane mic")
+        }
+        mic.tap()
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
         // Permissions may already be settled by another case on this simulator.
         // Refuse recording when prompted; starting alone must consume armed Ctrl.

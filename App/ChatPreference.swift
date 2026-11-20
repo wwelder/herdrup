@@ -1,7 +1,7 @@
 import HerdrKit
 import SwiftUI
 
-/// How an omp agent's page opens: the Chat view (the default) or the terminal. Settings
+/// How an agent's page opens: the Chat view (the default) or the terminal. Settings
 /// holds the default; the page's switch overrides it per agent for the rest of the session.
 enum ChatPreference {
     static let key = "chat.ompOpensIn"
@@ -22,10 +22,10 @@ enum ChatPreference {
         sessionChoice[paneID] = showsChat
     }
 
-    /// The Chat view exists for omp agents only; Claude Code and Codex stay on the terminal.
-    static func isOmp(_ agentKind: String?) -> Bool {
+    /// The Chat view exists for the agents whose session herdr reads: omp, Claude Code and Codex.
+    static func hasChat(_ agentKind: String?) -> Bool {
         guard let kind = agentKind?.lowercased() else { return false }
-        return kind == "omp" || kind.hasPrefix("omp ") || kind.hasPrefix("omp-")
+        return ["omp", "claude", "codex"].contains { kind == $0 || kind.hasPrefix($0 + " ") || kind.hasPrefix($0 + "-") }
     }
 }
 

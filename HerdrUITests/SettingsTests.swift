@@ -7,6 +7,22 @@ import UIKit
 /// `@AppStorage` survives between simulator launches, so a UI test cannot honestly
 /// claim to observe a fresh install.
 final class SettingsTests: XCTestCase {
+    /// Gram belongs to no machine: the tab is on every home, and until a machine is chosen it
+    /// asks which one runs the orchestrator. A mock run reaches no saved machine, so the
+    /// question shows whatever this simulator has saved.
+    func testGramTabAsksWhichMachineRunsTheOrchestrator() throws {
+        guard UIDevice.current.userInterfaceIdiom == .phone else {
+            throw XCTSkip("Exercises the phone tab bar")
+        }
+        let app = XCUIApplication.launched(mock: "list")
+        let gram = app.tabBars.buttons["Gram"]
+        XCTAssertTrue(gram.waitForExistence(timeout: 15), "the Gram tab")
+        XCTAssertTrue(app.tabBars.buttons["Agents"].isSelected, "the home still opens on Agents")
+        gram.tap()
+        let question = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Which machine does it run on?")).firstMatch
+        XCTAssertTrue(question.waitForExistence(timeout: 5), "Gram asks for the orchestrator's machine")
+    }
+
     func testCompactSettingsSurviveResizeAndResume() throws {
         guard UIDevice.current.userInterfaceIdiom == .pad else {
             throw XCTSkip("Exercises the iPad split-to-compact transition")

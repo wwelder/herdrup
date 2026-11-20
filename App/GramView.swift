@@ -2,7 +2,7 @@ import HerdrKit
 import SwiftUI
 import UIKit
 
-/// The unread-gram count, lifted out of `GramView` so the tab bar can badge it
+/// How many contacts have unread grams, lifted out of `GramView` so the tab bar can badge it
 /// even while the Gram tab is off-screen. Owned by the session-scoped home view;
 /// GramView writes it on load / mark-read while visible, and an ambient poller
 /// keeps it fresh while another tab is showing.
@@ -51,6 +51,16 @@ struct GramView: View {
     /// tab bar, the iPad section bar): the shown feed, the inbox or Saved, goes to its newest
     /// message at the bottom, not the system's scroll-to-top (see `WindowedBottomFeed`).
     var newestToken: Int = 0
+    /// Every session's running agents, so each is a contact before it has written.
+    var agents: [AgentInfo] = []
+    /// The session the app is connected to, whose roster rows carry no `session`.
+    var connectedSession: String = "default"
+
+    /// The agent whose conversation is open; nil shows the contact list.
+    @State private var openContact: GramContact.Key?
+    /// Every message in one feed (the contact list's "All messages" row).
+    @State private var showingAllMessages = false
+    private var showingContacts: Bool { openContact == nil && !showingAllMessages }
 
     /// The last server snapshot (newest first) and the owner's just-posted messages
     /// not yet reflected in a snapshot. `messages` composes them so a background poll
@@ -318,14 +328,32 @@ struct GramView: View {
     /// badge lie or hide a message from a Read-all pass. Do not fold the filter into
     /// `messages` itself.
     private var visibleMessages: [GramMessage] {
-        guard !search.isEmpty else { return messages }
-        return messages.filter { message in
+        guard !search.isEmpty else { return threadMessages }
+        return threadMessages.filter { message in
             message.text.localizedCaseInsensitiveContains(search)
                 || message.from.localizedCaseInsensitiveContains(search)
                 || message.senderName.localizedCaseInsensitiveContains(search)
                 || (message.to ?? "").localizedCaseInsensitiveContains(search)
                 || ((message.file ?? message.expiredFile)?.name ?? "").localizedCaseInsensitiveContains(search)
         }
+    }
+
+    /// The open conversation's messages, or every message without one.
+    /// ponytail: the index is rebuilt per read, O(loaded messages); cache it if a long store stutters.
+    private var threadMessages: [GramMessage] {
+        guard let openContact else { return messages }
+        let index = contactIndex
+        return messages.filter { index.key(of: $0) == openContact }
+    }
+
+    private var contactIndex: GramContactIndex {
+        GramContactIndex(messages: messages, agents: agents, connectedSession: connectedSession)
+    }
+
+    private var openedContact: GramContact? {
+        guard let openContact else { return nil }
+        return contactIndex.contacts.first { $0.key == openContact }
+            ?? GramContact(key: openContact, name: "", folder: nil, agent: nil, last: nil, unread: 0, waiting: false)
     }
 
     /// Saved rows after the same filter. `SavedGram` has no `to`, so sender + text + filename.
@@ -352,7 +380,7 @@ struct GramView: View {
     }
 
     private var feedTip: FeedTip? {
-        messages.max { $0.createdUnixMs < $1.createdUnixMs }
+        threadMessages.max { $0.createdUnixMs < $1.createdUnixMs }
             .map { FeedTip(id: $0.id, createdUnixMs: $0.createdUnixMs) }
     }
 
@@ -403,6 +431,12 @@ struct GramView: View {
         }
         .background(Palette.ground.ignoresSafeArea())
         .background { gramKeyboardShortcuts }
+        // An open conversation goes back to the contacts on a left-edge swipe, like its chevron.
+        .overlay {
+            if !showingContacts && !showingSaved {
+                EdgeSwipeBack { openContact = nil; showingAllMessages = false }
+            }
+        }
         #if DEBUG
         .overlay(alignment: .topLeading) { postCallsProbeView }
         // Mock knob HERDR_REDRAW_ON_TOUCH: a Gram pass at every touch-down (DebugTouchRedraw).
@@ -452,6 +486,15 @@ struct GramView: View {
             // During a search only the reader's own arrival at the top searches older
             // history: a short result list shows the sentinel at once, which asks nothing.
             feedVisibility.pageArmed = new.isEmpty
+        }
+        // Opening another conversation draws its newest window and lands at its bottom.
+        .onChange(of: showingContacts) { _, _ in
+            renderLimit = Self.renderWindow
+            didInitialScroll = false
+            showingNewMessages = false
+            pageAnchorID = nil
+            draft = ""
+            pickedAgent = nil
         }
         // The "Gram ›" pill: Read all, the agents seen in Gram, and the shared queue.
         .sheet(isPresented: $showingAgentsSheet) { agentsSheet }
@@ -713,23 +756,22 @@ struct GramView: View {
         .padding(.bottom, 8)
     }
 
-    /// The unread count, when there is one.
+    /// Back to the contacts, from a conversation.
     @ViewBuilder
     private var headerLeading: some View {
-        if unreadCount > 0 {
-            unreadCountText
-                .padding(.horizontal, 13)
-                .frame(minWidth: 44, minHeight: 44)
-                .gramGlass(Capsule())
-                .accessibilityLabel("\(unreadCount) unread")
+        if !showingContacts && !showingSaved {
+            Button { openContact = nil; showingAllMessages = false } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(Palette.text)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .gramGlass(Capsule())
+            .accessibilityLabel("Contacts")
+            .accessibilityIdentifier("gram-back")
         }
-    }
-
-    private var unreadCountText: some View {
-        Text(verbatim: "\(unreadCount)")
-            .font(Typography.app(17, .medium))
-            .monospacedDigit()
-            .foregroundStyle(Palette.waiting)
     }
 
     /// Search (when there is something to filter) and the Inbox / Saved toggle.
@@ -740,6 +782,7 @@ struct GramView: View {
                                    target: CGSize(width: 40, height: 44)) { toggleSearch() }
             }
             // A filled bookmark means the Saved section is showing.
+            if openContact == nil {
             Button {
                 withAnimation(.easeInOut(duration: 0.15)) { showingSaved.toggle() }
             } label: {
@@ -754,6 +797,7 @@ struct GramView: View {
             .accessibilityLabel("Saved")
             .accessibilityIdentifier("gram-saved-toggle")
             .accessibilityAddTraits(showingSaved ? .isSelected : [])
+            }
         }
         .padding(.horizontal, 2)
         .gramGlass(Capsule())
@@ -768,7 +812,55 @@ struct GramView: View {
     /// The most recent distinct agent senders' avatars over the "Gram ›" pill (or "Saved ›",
     /// see `headerTitle`), which opens the agents sheet (Read all, the agents seen in Gram,
     /// the shared queue).
+    @ViewBuilder
     private var headerIdentity: some View {
+        if let contact = openedContact {
+            contactIdentity(contact)
+        } else {
+            gramIdentity
+        }
+    }
+
+    /// The open conversation's agent: its avatar over its name and folder. A tap opens its
+    /// pane, the raw log.
+    private func contactIdentity(_ contact: GramContact) -> some View {
+        Button {
+            if case .pane(let session, let paneID) = contact.key {
+                PushCenter.shared.tapped(paneID: paneID, session: session)
+            }
+        } label: {
+            VStack(spacing: -6) {
+                GramAvatar(name: contact.name, size: 34).accessibilityHidden(true)
+                HStack(spacing: 5) {
+                    if let tint = contact.statusTint {
+                        Circle().fill(tint).frame(width: 7, height: 7)
+                    }
+                    Text(verbatim: contact.name)
+                        .font(Typography.app(13, .semibold))
+                        .foregroundStyle(Palette.text)
+                        .lineLimit(1)
+                    if let folder = contact.folder {
+                        Text(verbatim: folder)
+                            .font(Typography.app(12))
+                            .foregroundStyle(Palette.textFaint)
+                            .lineLimit(1)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .frame(height: 24)
+                .frame(maxWidth: 230)
+                .gramGlass(Capsule())
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .allowsHitTesting(contact.agent != nil)
+        .accessibilityLabel(contact.name)
+        .accessibilityHint(contact.agent == nil ? "" : "Opens the agent")
+        .accessibilityIdentifier("gram-contact-header")
+    }
+
+    private var gramIdentity: some View {
         Button { showingAgentsSheet = true } label: {
             VStack(spacing: -6) {
                 GramAvatarCluster(names: messages.filter(\.isFromAgent).map(\.from))
@@ -922,7 +1014,7 @@ struct GramView: View {
 
     private var content: some View {
         Group {
-            if showingSaved { savedContent } else { inboxContent }
+            if showingSaved { savedContent } else if showingContacts { contactsContent } else { inboxContent }
         }
         // Let a drag on the message feed dismiss the keyboard too, so the composer
         // never gets stuck covering the tab bar with no way out.
@@ -1175,6 +1267,67 @@ struct GramView: View {
         }
     }
 
+    /// The contact list: one row per agent (every running agent, and any with history), the
+    /// one waiting on the owner first. A row opens that agent's conversation.
+    @ViewBuilder
+    private var contactsContent: some View {
+        let contacts = contactIndex.contacts.filter { contact in
+            search.isEmpty || contact.name.localizedCaseInsensitiveContains(search)
+                || (contact.folder ?? "").localizedCaseInsensitiveContains(search)
+                || (contact.last?.text ?? "").localizedCaseInsensitiveContains(search)
+        }
+        if case .loaded = effectivePhase, !contacts.isEmpty || !search.isEmpty {
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    if search.isEmpty { allMessagesRow }
+                    ForEach(contacts) { contact in
+                        Button { open(contact.key) } label: { GramContactRow(contact: contact) }
+                            .buttonStyle(.plain)
+                        Rectangle().fill(Palette.hairlineQuiet).frame(height: 1).padding(.leading, 70)
+                    }
+                    if contacts.isEmpty {
+                        Text("No agent matches “\(search)”.")
+                            .font(Typography.app(13))
+                            .foregroundStyle(Palette.textFaint)
+                            .padding(.top, 40)
+                    }
+                    if shouldShowSetupCard { setupCard.padding(16) }
+                }
+                .conversationColumn()
+            }
+            .refreshable { await manualRefresh() }
+            .accessibilityIdentifier("gram-contacts")
+        } else {
+            inboxContent
+        }
+    }
+
+    /// The contact list's first row: every message in one feed, the shared queue and @ composer
+    /// with it.
+    private var allMessagesRow: some View {
+        Button { showingAllMessages = true } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "tray.full")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Palette.textDim)
+                    .frame(width: 42, height: 42)
+                    .background(Palette.surfaceRaised, in: Circle())
+                Text("All messages")
+                    .font(Typography.app(15, .semibold))
+                    .foregroundStyle(Palette.text)
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Palette.textFaint)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("gram-contact-all")
+    }
+
     /// The inbox feed's top sentinel: the feed is oldest-first and opens at the bottom, so it
     /// comes on screen only when the reader scrolls up past the oldest loaded message, which is
     /// exactly when the next page is worth fetching (see `requestOlderPage`). A failed page says
@@ -1220,6 +1373,20 @@ struct GramView: View {
     /// One inbox feed row with what draws above it: its time separator and the unread rule.
     private func inboxRow(index: Int, entry: GramFeedEntry) -> some View {
         GramFeedRow(index: index, entry: entry) {
+            if entry.message.kind != nil {
+                // herdr's own entry about an agent: opens that agent's pane in its session.
+                GramEventRow(message: entry.message, showsStatus: entry.showsStatus, fontScale: uiFontScale) {
+                    guard let paneID = entry.message.paneID else { return }
+                    // A left-edge swipe back ends on the same touch-up as this card's tap: decide
+                    // after both have run, and stay on the contacts if the swipe took us there.
+                    DispatchQueue.main.async {
+                        guard !showingContacts else { return }
+                        PushCenter.shared.tapped(paneID: paneID, session: entry.message.session)
+                    }
+                }
+                .equatable()
+                .padding(.vertical, 3)
+            } else {
             GramRow(
                 message: entry.message,
                 isDownloadingFile: downloadingFileFor == entry.message.id,
@@ -1239,12 +1406,12 @@ struct GramView: View {
                 onDelete: { delete(entry.message) },
                 onSetExpanded: { segment, open in setExpanded(entry.id, segment: segment, open) },
                 startsGroup: entry.startsGroup,
-                endsGroup: entry.endsGroup,
                 localMachine: localMachine
             )
             // A page render (a keystroke, a poll, another file's progress) skips
             // every row whose inputs are unchanged (`GramRow.==`).
             .equatable()
+            }
         }
     }
 
@@ -1361,7 +1528,7 @@ struct GramView: View {
                     isEnabled: !draftDictating,
                     isFocused: composerFocused,
                     onFocusChange: { composerFocused = $0 },
-                    placeholder: "Queue, or @ an agent…",
+                    placeholder: openedContact.map { "Message \($0.name)…" } ?? "Queue, or @ an agent…",
                     accessibilityIdentifier: "gram-composer-input",
                     capitalization: .sentences,
                     autocorrection: .default,
@@ -1543,7 +1710,7 @@ struct GramView: View {
     /// Every agent matching the "@" being typed at the caret, names starting with the query
     /// first; empty when no "@" is being typed there (or nothing matches).
     private var mentionMatches: [GramAgent] {
-        guard let active = GramMention.activeQuery(in: draft, cursor: draftCaret) else { return [] }
+        guard openContact == nil, let active = GramMention.activeQuery(in: draft, cursor: draftCaret) else { return [] }
         let query = active.query.lowercased()
         guard !query.isEmpty else { return gramAgents }
         let starting = gramAgents.filter { $0.name.lowercased().hasPrefix(query) }
@@ -1572,6 +1739,8 @@ struct GramView: View {
         case ambiguous(String)
         /// A leading "@token" that names no agent in Gram ("" for a bare "@").
         case unknown(String)
+        /// The open conversation's agent.
+        case contact(GramContact.Key)
     }
 
     private struct DraftAddress {
@@ -1591,6 +1760,9 @@ struct GramView: View {
     /// never quietly sent to the shared queue (its files could be secrets). No mention at all:
     /// the shared queue.
     private var draftAddress: DraftAddress {
+        if let openContact {
+            return DraftAddress(route: .contact(openContact), body: draft, leading: false, accent: nil)
+        }
         let names = mentionNames
         let resolved = GramMention.resolve(draft, knownNames: names)
         let leading = resolved.recipient != nil && resolved.body != draft
@@ -1615,7 +1787,7 @@ struct GramView: View {
     /// Why the draft cannot be sent as it stands, if it cannot.
     private static func hint(for route: DraftRoute) -> String? {
         switch route {
-        case .queue, .agent: return nil
+        case .queue, .agent, .contact: return nil
         case .ambiguous(let name): return "Several agents are called \(name): pick one"
         case .unknown(let token):
             return token.isEmpty ? "Pick an agent after @" : "No agent called @\(token) in Gram"
@@ -1627,7 +1799,7 @@ struct GramView: View {
         switch draftAddress.route {
         case .queue: return agent == nil
         case .agent(let addressed): return addressed.from == agent?.from
-        case .ambiguous, .unknown: return false
+        case .ambiguous, .unknown, .contact: return false
         }
     }
 
@@ -1658,7 +1830,7 @@ struct GramView: View {
         guard !sending, !loadingPhoto, !draftDictating else { return false }
         let address = draftAddress
         switch address.route {
-        case .queue, .agent: break
+        case .queue, .agent, .contact: break
         case .ambiguous, .unknown: return false
         }
         // A bare "@vetrina" has no message: the body without the mention must say something.
@@ -1873,7 +2045,7 @@ struct GramView: View {
             // from the same list, so skip it (the common case on a 6s poll).
             guard changed || !answer.isUnchanged else { return .unchanged }
             // Keep the tab badge in step with what we just loaded.
-            unread?.count = inboxStore.inbox.unreadCount
+            unread?.count = GramContactIndex.unreadContactCount(in: inboxStore.inbox.messages)
             // Drop optimistic posts the server now reflects; unconfirmed ones stay
             // visible via `messages` (gram.post writes synchronously, so any in-flight
             // load started BEFORE a post can no longer discard it).
@@ -1912,7 +2084,8 @@ struct GramView: View {
     /// sentinel do its work on the first draw, and it is small enough that the open
     /// costs a few tens of KB instead of the ~900 KB the whole store weighs. Older
     /// pages are the same size: a scroll that keeps going should keep costing the same.
-    static let pageSize = 40
+    /// 150 rather than 40: the contact list is built from the loaded window.
+    static let pageSize = 150
 
     /// Ceiling for the head refresh, matching the daemon's own `GRAM_LIST_MAX_LIMIT`.
     /// A reader who has paged past it keeps scrolling through the sentinel; the refresh
@@ -2034,11 +2207,25 @@ struct GramView: View {
         // than the one addressed when Send was tapped. The field is also disabled while
         // sending, but capturing is the real guarantee. A draft that names no agent, or
         // names several, is never sent (to the shared queue or anywhere).
-        let to: String?
+        // A pane is addressed through its own session's server, where its id means it.
+        var to: String?
+        var paneID: String?
+        var poster = client
         switch address.route {
         case .queue: to = nil
         case .agent(let agent): to = agent.from
         case .ambiguous, .unknown: return
+        case .contact(.queue): to = nil
+        case .contact(.name(let name)): to = name
+        case .contact(.pane(let session, let pane)):
+            paneID = pane
+            if session != connectedSession {
+                guard let scoped = client.forSession(session == "default" ? nil : session) else {
+                    sendError = "Can't reach session \(session)."
+                    return
+                }
+                poster = scoped
+            }
         }
         // A file with no caption is fine; an empty text-only message is not.
         guard (!text.isEmpty || !files.isEmpty), !sending else { return }
@@ -2059,7 +2246,7 @@ struct GramView: View {
         // Text-only: the unchanged single-message path.
         guard !files.isEmpty else {
             do {
-                let posted = try await client.gramPost(text: text, to: to)
+                let posted = try await poster.gramPost(text: text, to: to, paneID: paneID)
                 draft = ""
                 pendingPosts.removeAll { $0.id == posted.id }
                 pendingPosts.insert(posted, at: 0)
@@ -2079,8 +2266,8 @@ struct GramView: View {
         // never re-sends the caption onto a different file.
         let captionID = files.first?.id
         let sender = uploader.sender(client: client, into: $attachedFiles, post: { file, attachment in
-            let posted = try await client.gramPost(
-                text: file.id == captionID ? text : "", to: to, attachment: attachment)
+            let posted = try await poster.gramPost(
+                text: file.id == captionID ? text : "", to: to, paneID: paneID, attachment: attachment)
             // Optimistic: kept in `pendingPosts`, so a concurrent poll's snapshot
             // cannot drop it; de-duped by id, reconciled once the server reflects it.
             pendingPosts.removeAll { $0.id == posted.id }
@@ -2590,6 +2777,17 @@ struct GramView: View {
         }
     }
 
+    /// Opening a conversation reads it: every unread message in it is marked read.
+    /// ponytail: one `gram.mark_read` Task per message; serialise like `markAllRead` if a
+    /// contact ever piles up hundreds.
+    private func open(_ contact: GramContact.Key) {
+        let index = contactIndex
+        for message in messages where message.isUnread && index.key(of: message) == contact {
+            markReadIfNeeded(message)
+        }
+        openContact = contact
+    }
+
     private func markReadIfNeeded(_ message: GramMessage) {
         if !unreadRuleCaptured { captureUnreadRule() }
         // Skip if already read or a mark-read is already in flight for it (onAppear
@@ -2604,7 +2802,7 @@ struct GramView: View {
                 // agent->owner message always lives in the server snapshot.
                 inboxStore.inbox.markRead(id: message.id)
                 // Reading a message clears it from the badge immediately.
-                unread?.count = inboxStore.inbox.unreadCount
+                unread?.count = GramContactIndex.unreadContactCount(in: inboxStore.inbox.messages)
             } catch {
                 // Leave it unread; the next poll re-surfaces it.
             }
@@ -2674,7 +2872,7 @@ struct GramView: View {
         // Whatever array is current now, the ids we confirmed read are read. Ids still in flight
         // elsewhere are left to their own Task, which flips them on success.
         for id in marked { inboxStore.inbox.markRead(id: id) }
-        unread?.count = inboxStore.inbox.unreadCount
+        unread?.count = GramContactIndex.unreadContactCount(in: inboxStore.inbox.messages)
         // Partial failure is reported, not swallowed: the badge will still show a count and the
         // reader needs to know why. Its OWN slot, not `refreshNote` — the 6-second poll clears
         // that one unconditionally on success, so the explanation would outlive the badge by
@@ -2863,7 +3061,9 @@ struct GramFeedEntry: Identifiable {
     /// The unread rule above the row.
     let unreadCount: Int?
     let startsGroup: Bool
-    let endsGroup: Bool
+    /// An agent event's status line ("Finished · Open ›"). Every event of one pane opens the
+    /// same agent, so only the newest shows it, plus any still waiting for the owner.
+    var showsStatus = true
     var id: String { message.id }
     var startsAfterMarker: Bool { separator != nil || unreadCount != nil }
 
@@ -2881,21 +3081,26 @@ struct GramFeedEntry: Identifiable {
             return (separates ? date : nil, unread)
         }
         func breaks(_ index: Int) -> Bool { markers[index].separator != nil || markers[index].unread != nil }
+        var newestPerPane: [String: String] = [:]
+        for row in rows where row.kind != nil {
+            if let pane = row.paneID { newestPerPane[(row.session ?? "") + "/" + pane] = row.id }
+        }
         return rows.indices.map { index in
-            let next = index + 1
+            let row = rows[index]
+            let waiting = row.kind == .blocked && !row.resolved
             return GramFeedEntry(
-                message: rows[index],
+                message: row,
                 separator: markers[index].separator,
                 unreadCount: markers[index].unread,
-                startsGroup: index == 0 || breaks(index) || !GramRow.sameRun(rows[index - 1], rows[index]),
-                endsGroup: next == rows.count || breaks(next) || !GramRow.sameRun(rows[index], rows[next])
+                startsGroup: index == 0 || breaks(index) || !GramRow.sameRun(rows[index - 1], row),
+                showsStatus: waiting || row.paneID.map { newestPerPane[(row.session ?? "") + "/" + $0] == row.id } ?? true
             )
         }
     }
 }
 
 /// One feed row with what draws above it (its time separator and the unread rule) and the
-/// feed's gaps: 2 pt inside a sender group, 10 pt between groups.
+/// feed's gaps: 12 pt inside a sender group, 20 pt between groups.
 struct GramFeedRow<Row: View>: View {
     let index: Int
     let entry: GramFeedEntry
@@ -2907,24 +3112,22 @@ struct GramFeedRow<Row: View>: View {
                 GramTimeSeparator(date: date)
                     .padding(.top, index == 0 ? 0 : 16)
             }
-            if let count = entry.unreadCount {
-                GramUnreadRule(count: count)
+            if entry.unreadCount != nil {
+                GramUnreadRule()
                     .padding(.top, index == 0 && entry.separator == nil ? 0 : 12)
             }
             row()
-                .padding(.top, index == 0 && !entry.startsAfterMarker ? 0 : (entry.startsGroup ? 10 : 2))
+                .padding(.top, index == 0 && !entry.startsAfterMarker ? 0 : (entry.startsGroup ? 20 : 12))
         }
     }
 }
 
-/// One message in the feed: option D's iMessage layout in herdr's colours (round 3).
-///
-/// An agent's group opens with a "name · machine" line and carries the sender's avatar
-/// beside its last bubble; the owner's own posts sit on the right with a status line
-/// ("Grabbed by …" / "Delivered to …"). Prose folds past four lines, fenced code draws in a
-/// monospaced inset with Copy, an image attachment shows as a picture card and any other
-/// file as a file card, sharing one card with the text when the message has both. A file
-/// the store expired draws as a file card with nothing to open (`GramExpiredFileCard`).
+/// One message in the feed, laid out like Claude Code's chat: an agent's group opens with a
+/// "name · machine" line and its text is markdown across the column, with no bubble; the
+/// owner's own posts are grey bubbles on the right with a status line ("Grabbed by …" /
+/// "Delivered to …"). An image attachment shows whole at its own shape, any other file as a
+/// file card. A file the store expired draws as a file card with nothing to open
+/// (`GramExpiredFileCard`).
 ///
 /// `viewer` says whose feed it is: the owner's inbox, or a guest's copy of the one agent
 /// shared with them (`GuestGramList`), which draws the same rows with less to do.
@@ -2972,8 +3175,6 @@ struct GramRow: View, Equatable {
     var onSetExpanded: (Int, Bool) -> Void
     /// The first message of a sender group: draws the sender line.
     var startsGroup = true
-    /// The last message of a group: draws the avatar and the bubble tail.
-    var endsGroup = true
     /// This device's own machine label, for a local sender's "name · machine" line (a
     /// federated sender carries its own). Empty when unknown: the line shows the name only.
     var localMachine = ""
@@ -3005,7 +3206,6 @@ struct GramRow: View, Equatable {
             && lhs.expandedSegments == rhs.expandedSegments
             && lhs.fontScale == rhs.fontScale
             && lhs.startsGroup == rhs.startsGroup
-            && lhs.endsGroup == rhs.endsGroup
             && lhs.localMachine == rhs.localMachine
             && lhs.viewer == rhs.viewer
             && (lhs.message.file?.isImage != true
@@ -3032,37 +3232,34 @@ struct GramRow: View, Equatable {
         let _ = GramRowRenders.record()
         #endif
         let segments = GramText.segments(message.text)
-        let hasTextPart = !segments.isEmpty || hasCard
         VStack(alignment: mine ? .trailing : .leading, spacing: 0) {
             if startsGroup && !mine {
-                senderLine
-                    .padding(.leading, GramBubble.groupIndent + 12)
-                    .padding(.bottom, 2)
+                senderLine.padding(.bottom, 4)
             }
-            HStack(alignment: .bottom, spacing: GramBubble.groupIndent - GramBubble.avatarSize) {
-                if !mine {
-                    if endsGroup {
-                        GramAvatar(name: message.from, size: GramBubble.avatarSize)
-                    } else {
-                        Color.clear.frame(width: GramBubble.avatarSize, height: GramBubble.avatarSize)
+            VStack(alignment: mine ? .trailing : .leading, spacing: 8) {
+                if mine {
+                    if !segments.isEmpty || hasCard {
+                        chrome(textPart(segments), first: true)
+                            .gramBubbleWidth(incoming: false, sizeClass: sizeClass)
+                    }
+                } else {
+                    // An agent's text as Claude Code draws a reply: markdown across the
+                    // column, no bubble.
+                    if !message.text.isEmpty {
+                        chrome(ChatMarkdownView(markdown: message.text), first: true)
+                    }
+                    if hasCard {
+                        chrome(card(embedded: false), first: message.text.isEmpty)
+                            .gramBubbleWidth(incoming: true, sizeClass: sizeClass)
                     }
                 }
-                VStack(alignment: mine ? .trailing : .leading, spacing: 2) {
-                    // The tail goes only on a part that ENDS IN TEXT: never on a picture, a
-                    // bare file card, or a text + file card (the card comes last).
-                    if hasTextPart {
-                        chrome(textPart(segments), first: true,
-                               tail: !segments.isEmpty && !hasCard && imageFile == nil)
-                    }
-                    if let image = imageFile {
-                        chrome(imageCard(image), first: !hasTextPart, tail: false)
-                    }
+                if let image = imageFile {
+                    chrome(imageCard(image), first: segments.isEmpty && !hasCard)
                 }
-                // The message's drawn bubble(s), for UI tests that measure it (a line-limited
-                // Text's own frame is not its drawn height). Children stay accessible.
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier("gram-bubble-\(message.id)")
             }
+            // The message's drawn parts, for UI tests that measure it. Children stay accessible.
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("gram-bubble-\(message.id)")
             if let status = statusLine {
                 status
                     .font(Typography.app(11, .medium))
@@ -3072,7 +3269,7 @@ struct GramRow: View, Equatable {
             }
         }
         .frame(maxWidth: .infinity, alignment: mine ? .trailing : .leading)
-        // Room for the saved badge, which sits above the bubble's top edge.
+        // Room for the saved badge, which sits above the message's top edge.
         .padding(.top, isSaved ? 12 : 0)
     }
 
@@ -3091,24 +3288,18 @@ struct GramRow: View, Equatable {
         .lineLimit(1)
     }
 
-    /// One part of the message (its text card, or its picture) with what every part
-    /// shares: the tail on the group's last text part, the saved badge on the first part,
-    /// the context menu, and the width cap (`gramBubbleWidth`, of the width the avatar
-    /// leaves). The cap is applied AFTER the background so a short bubble still hugs its text.
-    /// `tail` says the part ends in text and is the message's last part; the tail then
-    /// shows on the group's last message only, in the bubble's own fill.
-    private func chrome<Content: View>(_ content: Content, first: Bool, tail: Bool) -> some View {
+    /// One part of the message (its text, a file card, its picture) with what every part
+    /// shares: the saved badge on the first part and the context menu.
+    private func chrome<Content: View>(_ content: Content, first: Bool) -> some View {
         content
-            .gramBubbleTail(mine: mine, shown: tail && endsGroup)
             .overlay(alignment: .topTrailing) {
                 if first && isSaved {
-                    GramSavedBadge().offset(x: 15, y: -17)
+                    GramSavedBadge().offset(x: mine ? 15 : 0, y: -17)
                 }
             }
             // Never rebuilt by a feed pass while open (see StableContextMenu.swift); the
             // preview lifts the bubble's shape.
             .stableContextMenu(previewCornerRadius: GramBubble.radius) { menu }
-            .gramBubbleWidth(incoming: !mine, sizeClass: sizeClass)
     }
 
     /// The message's one menu, on every part of it (the attachment cards included): the
@@ -3280,37 +3471,16 @@ struct GramRow: View, Equatable {
 /// Metrics for Gram's message bubbles (round 3: option D's layout in herdr's colours).
 enum GramBubble {
     static let radius: CGFloat = 18
-    /// Agents' bubbles: surfaceRaised.
+    /// Your bubbles and the file cards: surfaceRaised.
     static let inFill = Palette.surfaceRaised
-    /// Your bubbles: the brand violet darkened so white text passes contrast.
+    /// Gram's accent fill (the saved badge, a selected conversation): the brand violet
+    /// darkened so white text passes contrast.
     static let outFill = Color(hex: 0x5A4ED6)
-    /// The sender's avatar beside an agent group's last bubble.
-    static let avatarSize: CGFloat = 28
-    /// How far an agent group sits in from the feed's edge: the avatar plus an 8 pt gap.
-    static let groupIndent: CGFloat = 36
     /// The guest's Gram feed's width cap (#354 follow-up); the owner's feeds follow the
     /// conversation column on iPad and Mac (`conversationColumn`). About the
     /// width of a Messages conversation on iPad, so a long message wraps at a readable measure
     /// and your bubbles on the right stay near the agents' on the left.
     static let columnCap: CGFloat = 720
-}
-
-/// The bubble's tail: one smooth shape drawn BEHIND the bubble (no layered mask), curving
-/// out of the bottom corner. Drawn for the left side in a 24 x 22 box whose x = 6 is the
-/// bubble's edge; mirror it for the right.
-struct BubbleTail: Shape {
-    func path(in rect: CGRect) -> Path {
-        let sx = rect.width / 24, sy = rect.height / 22
-        func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: rect.minX + x * sx, y: rect.minY + y * sy) }
-        var path = Path()
-        path.move(to: p(6, 0))
-        path.addLine(to: p(6, 12))
-        path.addCurve(to: p(0, 22), control1: p(6, 16.8), control2: p(3.8, 20.3))
-        path.addCurve(to: p(24, 22), control1: p(7, 22.7), control2: p(14, 22.3))
-        path.addLine(to: p(24, 0))
-        path.closeSubpath()
-        return path
-    }
 }
 
 extension View {

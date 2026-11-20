@@ -1,6 +1,8 @@
 import Foundation
 import Combine
+#if !targetEnvironment(macCatalyst)
 import ActivityKit
+#endif
 import HerdrKit
 
 /// Owns the single agent-session Live Activity: starts it when a session connects,
@@ -15,6 +17,19 @@ import HerdrKit
 final class LiveActivityController: ObservableObject {
     static let shared = LiveActivityController()
     private init() {}
+
+    #if targetEnvironment(macCatalyst)
+    // Mac Catalyst has no Live Activities (ActivityKit is unavailable there). The session's
+    // machine name is still kept for the widget data; every Live Activity call does nothing.
+    @Published private(set) var pushToken: String?
+    private var hostLabel: String?
+    var apm: Double? { nil }
+    var currentHostLabel: String? { hostLabel }
+    func start(hostLabel: String, state: AgentActivityAttributes.ContentState) { self.hostLabel = hostLabel }
+    func recoverIfEnded(_ state: AgentActivityAttributes.ContentState) {}
+    func update(_ state: AgentActivityAttributes.ContentState) {}
+    func end() { hostLabel = nil }
+    #else
 
     private var activity: Activity<AgentActivityAttributes>?
 
@@ -68,6 +83,12 @@ final class LiveActivityController: ObservableObject {
     /// mid-session. Cleared by `end`, which is what keeps a disconnected session from
     /// resurrecting its banner.
     private var hostLabel: String?
+
+    /// The host APM herdr last pushed to the activity, for the home-screen widgets.
+    var apm: Double? { liveActivity?.content.state.apm }
+
+    /// The host label of the current session, for the home-screen widgets.
+    var currentHostLabel: String? { hostLabel }
 
     /// Whether the system currently permits Live Activities (user toggle + capability).
     private var enabled: Bool { ActivityAuthorizationInfo().areActivitiesEnabled }
@@ -181,6 +202,9 @@ final class LiveActivityController: ObservableObject {
             if let hostLabel { start(hostLabel: hostLabel, state: state) }
             return
         }
+        // Only herdr's push measures APM, so the app's own roster updates keep its last one.
+        var state = state
+        if state.apm == nil { state.apm = activity.content.state.apm }
         // staleDate nil for the same reason as in `start`: nothing re-pushes on a cadence,
         // so an elapsed window would mean "the roster did not change", not "the host is gone".
         Task { await activity.update(ActivityContent(state: state, staleDate: nil)) }
@@ -201,6 +225,7 @@ final class LiveActivityController: ObservableObject {
             }
         }
     }
+    #endif
 
     // MARK: - Mapping HerdrKit → the shared content state
 
@@ -231,6 +256,7 @@ final class LiveActivityController: ObservableObject {
             totalCount: c.totalCount,
             workingSince: c.workingSinceUnixSeconds,
             blockedSince: c.blockedSinceUnixSeconds,
+            question: c.question,
             agentID: c.agentID,
             updatedAt: Date().timeIntervalSince1970
         )

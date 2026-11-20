@@ -19,12 +19,13 @@ enum ConversationColumnLayout {
 /// Where a column resizer sits: names its handles for VoiceOver and the UI tests
 /// (`chat-width-handle-left`, `gram-width-readout`).
 enum ConversationSurface: String {
-    case chat, gram
+    case chat, gram, feed
 
     var name: String {
         switch self {
         case .chat: return "Chat"
         case .gram: return "Gram"
+        case .feed: return "Feed"
         }
     }
 
@@ -32,6 +33,7 @@ enum ConversationSurface: String {
         switch self {
         case .chat: return "Drag to resize the chat. Double-tap to reset to Wide."
         case .gram: return "Drag to resize Gram. Double-tap to reset to Wide."
+        case .feed: return "Drag to resize the card. Double-tap to reset to Wide."
         }
     }
 }
@@ -142,7 +144,7 @@ private struct ConversationColumnResizer: View {
     @State private var lastTap: (edge: ConversationColumnWidth.Edge, at: Date)?
 
     /// The Mac: a pointer, so a narrower hit band and nothing drawn at rest.
-    private static let onMac = ProcessInfo.processInfo.isiOSAppOnMac
+    private static let onMac = ProcessInfo.processInfo.isOnMac
     private static let hitWidth: CGFloat = onMac ? 20 : 44
     private static let doubleTapInterval: TimeInterval = 0.45
     /// A touch that moves less than this is a tap, not a drag.

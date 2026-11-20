@@ -105,7 +105,7 @@ struct SectionTopBar<Leading: View, Actions: View>: View {
                     ?? hostWindowControls.flatMap { barTop < $0.top + $0.height ? $0 : nil }
                 let windowed = controls != nil
                 // Mac keeps its window controls in their own row above the bar.
-                let sharesRow = windowed && !ProcessInfo.processInfo.isiOSAppOnMac
+                let sharesRow = windowed && !ProcessInfo.processInfo.isOnMac
                 let row = DesignTokens.Size.topBarRow
                 let rowHeight = sharesRow ? max(20, (controls?.pillHeight ?? row).rounded()) : row
                 content(leading: corners.topLeading.width, trailing: corners.topTrailing.width,
@@ -136,7 +136,7 @@ struct SectionTopBar<Leading: View, Actions: View>: View {
 
     private func content(leading: CGFloat, trailing: CGFloat, windowed: Bool, rowHeight: CGFloat) -> some View {
         let backLeads = UIDevice.current.userInterfaceIdiom != .pad
-            || ProcessInfo.processInfo.isiOSAppOnMac
+            || ProcessInfo.processInfo.isOnMac
             || !windowed
         return SectionBarLayout(leadingInset: leading, trailingInset: trailing) {
             HStack(spacing: 0, content: self.leading)

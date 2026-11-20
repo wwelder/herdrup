@@ -183,6 +183,9 @@ private final class ShareModel: ObservableObject {
     private func loadRecipients() async {
         // Independent connections overlap; one sleeping machine must not delay
         // every later machine by another full SSH connection timeout.
+        // This process can outlive a change the app made to the machines, or to where their
+        // secrets are kept (a download from iCloud): look at the list as it is now.
+        SavedHostsStore.shared.reload()
         await withTaskGroup(of: Void.self) { group in
             for host in SavedHostsStore.shared.hosts {
                 group.addTask { @MainActor in await self.loadOwner(host) }

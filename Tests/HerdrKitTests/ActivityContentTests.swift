@@ -394,6 +394,11 @@ final class ActivityContentTests: XCTestCase {
         let working = try list([.working])
         XCTAssertNil(working.activityContent.blockedSinceUnixSeconds)
         XCTAssertEqual(working.activityContent.agentID, "p0")
+
+        // Another herdr session's lead (the All view) keeps its session, so a tap opens it there.
+        let other = AgentList(agents: [try agent(pane: "p0", status: "blocked").inSession("top-l")],
+                              livePaneIDs: ["p0"])
+        XCTAssertEqual(other.activityContent.agentID, "top-l/p0")
     }
 
     // MARK: - the residual mutants #207's review left surviving
@@ -530,13 +535,13 @@ final class ActivityContentTests: XCTestCase {
 
     /// R2 (P3). `headline: lead?.title` mutated to `lead?.info.name` survived, because no fixture
     /// had a NAMELESS lead — so `displayName`'s fallback chain (name ?? terminalTitleStripped ??
-    /// paneID) was unpinned at the headline call site. On the wire `name` is optional, so under the
+    /// agent ?? "agent") was unpinned at the headline call site. On the wire `name` is optional, so under the
     /// mutant a real roster of unnamed panes headlines "No agents".
     func testTheHeadlineFallsBackWhenTheLeadHasNoName() throws {
         let l = AgentList(agents: [try agent(pane: "w1:p9", status: "blocked")], livePaneIDs: ["w1:p9"])
         XCTAssertNil(l.activityLead?.info.name, "premise: the lead genuinely has no name")
-        XCTAssertEqual(l.activityContent.headline, "w1:p9",
-                       "with no name and no terminal title, displayName falls back to the paneID — never to the empty-roster constant")
+        XCTAssertEqual(l.activityContent.headline, "agent",
+                       "with no name, terminal title or agent kind, displayName falls back to \"agent\" — never to herdr's pane id, nor to the empty-roster constant")
         XCTAssertNotEqual(l.activityContent.headline, "No agents")
     }
 

@@ -1,6 +1,12 @@
 import SwiftUI
 import HerdrKit
 
+extension ProcessInfo {
+    /// The app runs on a Mac: as its Mac build (Mac Catalyst), or as the iOS app that macOS
+    /// runs unchanged (Designed for iPad). Both draw through the same UIKit-on-Mac runtime.
+    var isOnMac: Bool { isiOSAppOnMac || isMacCatalystApp }
+}
+
 // Design tokens for herdr mobile, taken from the Claude Design kit
 // (herdr mobile.dc.html + DESIGN-BRIEF.md). The brief's rules are load-bearing:
 // deep desaturated navy ground (never black); colour is MEANING, not decoration
@@ -112,7 +118,7 @@ enum Typography {
 /// the meaning and its picture cannot drift out of one file.
 ///
 /// Colour = meaning (brief): amber = wants a look (blocked OR uninterpretable),
-/// red = the pane is gone, blue = working, faint = idle. `.unrecognised` is amber
+/// red = the pane is gone, green = done, blue = working, faint = idle. `.unrecognised` is amber
 /// on purpose — "this build cannot read it" is nearer to needs-attention than to
 /// nothing-to-do, the same reasoning that sorts it high.
 extension AgentGroup {
@@ -121,6 +127,7 @@ extension AgentGroup {
         case .needsYou: return Color(hex: DesignTokens.Group.needsYou)
         case .stopped: return Color(hex: DesignTokens.Group.stopped)
         case .unrecognised: return Color(hex: DesignTokens.Group.unrecognised)
+        case .done: return Color(hex: DesignTokens.Status.done)
         case .working: return Color(hex: DesignTokens.Group.working)
         case .idle: return Color(hex: DesignTokens.Group.idle)
         }
@@ -276,7 +283,7 @@ enum AgentAvatarBadge: Equatable {
         case .stopped: self = .stopped
         case .unrecognised: self = .unrecognised
         case .working: self = .working
-        case .idle: self = .none
+        case .done, .idle: self = .none
         }
     }
 }

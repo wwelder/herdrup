@@ -201,7 +201,6 @@ struct GuestGramList: View {
                 if open { expanded[message.id, default: []].insert(segment) } else { expanded[message.id]?.remove(segment) }
             },
             startsGroup: entry.startsGroup,
-            endsGroup: entry.endsGroup,
             viewer: .guest
         )
         // A page render (a keystroke, a poll, a file's progress) skips every row whose
