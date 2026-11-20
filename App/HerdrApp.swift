@@ -5579,6 +5579,8 @@ struct TerminalPaneContent: View {
     /// is no list to go back to, so it has no back button or edge swipe, and it does not
     /// offer to close the agent.
     let embedded: Bool
+    /// The page was opened with a `draft` in its reply field (see `init`).
+    private let opensWithDraft: Bool
     @State private var reply: String
     @StateObject private var composerKeyboard = ComposerKeyboard()
     /// Every staged attachment, in paste order. Each sends as its own gram message and
@@ -5768,6 +5770,7 @@ struct TerminalPaneContent: View {
         self.onClose = onClose
         _agent = State(initialValue: agent)
         _reply = State(initialValue: initialReply.isEmpty ? draft : initialReply)
+        opensWithDraft = !draft.isEmpty
         _pendingPrefill = State(initialValue: !initialReply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         _chatModel = StateObject(wrappedValue: ChatModel(target: paneID))
         _showsChat = State(initialValue: ChatPreference.showsChat(paneID: paneID))
@@ -5813,8 +5816,13 @@ struct TerminalPaneContent: View {
     /// streams there and Claude transcribes into its prompt, for Return to send. nil hides
     /// the mic: other agents have no dictation mode to feed (Codex's voice is a spoken
     /// conversation, omp has none), and a federated pane is on another machine.
+    ///
+    /// Also nil on a page opened with a draft: Claude writes the spoken words into its own
+    /// prompt, past the draft in this field, and Send would then submit the draft without
+    /// them. The keyboard's dictation writes into the field, after the draft.
     private var agentVoice: (@MainActor (AsyncStream<Data>) async throws -> Void)? {
-        guard agent?.agent?.lowercased() == "claude", client.canStreamAgentVoice(pane: paneID) else { return nil }
+        guard !opensWithDraft, agent?.agent?.lowercased() == "claude",
+              client.canStreamAgentVoice(pane: paneID) else { return nil }
         let client = client, pane = paneID
         return { audio in try await client.streamAgentVoice(pane: pane, audio: audio) }
     }
