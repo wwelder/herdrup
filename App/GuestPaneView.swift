@@ -919,7 +919,7 @@ extension AgentInfo {
     var guestFolder: String? {
         guard let cwd, !cwd.isEmpty else { return nil }
         let skip = Set([name, agent].compactMap { $0 })
-        return URL(fileURLWithPath: cwd).pathComponents.reversed()
+        return (cwd as NSString).pathComponents.reversed()
             .first { $0 != "/" && $0 != "." && !skip.contains($0) }
     }
 }

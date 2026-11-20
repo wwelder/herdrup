@@ -1214,11 +1214,7 @@ struct NewAgentView: View {
     /// the name; a duplicate surfaces as a start error rather than being guessed.
     private var derivedName: String {
         let f = folder.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !f.isEmpty {
-            let base = URL(fileURLWithPath: f).lastPathComponent
-            if !base.isEmpty && base != "/" { return base }
-        }
-        return kind
+        return GramContact.folder(of: f) ?? kind
     }
 
     var body: some View {
@@ -4683,9 +4679,10 @@ struct TerminalHomeView: View {
     /// is the stripped terminal title. Either may be missing; the agent kind is the
     /// last resort so a row is never subtitle-less.
     private func subtitle(_ info: AgentInfo) -> String {
-        let folder = info.cwd
-            .map { URL(fileURLWithPath: $0).lastPathComponent }
-            .flatMap { $0.isEmpty || $0 == "/" ? nil : $0 }
+        // Never `URL(fileURLWithPath:)` on a path from the machine: it asks THIS device's file
+        // system whether the path is a folder, and on a Mac `/home` is an automount point, so a
+        // Linux machine's `/home/...` cost about 11 ms a row on every pass over the list.
+        let folder = GramContact.folder(of: info.cwd)
         var detail: String
         switch (folder, info.activityText) {
         case let (f?, a?): detail = "\(f) · \(a)"
@@ -5804,11 +5801,9 @@ struct TerminalPaneContent: View {
         var parts: [String] = []
         if !name.isEmpty { parts.append(name) }                       // never a leading " · " for an empty name
         if let kind = agent?.agent, !kind.isEmpty, !parts.contains(kind) { parts.append(kind) }
-        if let cwd = agent?.cwd {
-            let folder = URL(fileURLWithPath: cwd).lastPathComponent
-            // Dedup the folder against BOTH name and kind, and drop the non-folders URL yields for a
-            // root/empty cwd ("/" and "." respectively).
-            if !folder.isEmpty, folder != "/", folder != ".", !parts.contains(folder) { parts.append(folder) }
+        // Dedup the folder against BOTH name and kind; a root or empty cwd names no folder.
+        if let folder = GramContact.folder(of: agent?.cwd), folder != ".", !parts.contains(folder) {
+            parts.append(folder)
         }
         return parts.isEmpty ? title : parts.joined(separator: " · ")   // fall back so the header is never blank
     }
