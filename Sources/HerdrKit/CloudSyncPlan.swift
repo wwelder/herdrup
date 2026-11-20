@@ -23,8 +23,9 @@ public enum CloudSyncPlan {
     ///   - localEmpty: this device has no machines.
     ///   - localChanged: this device's machines are not what it last agreed on.
     ///   - cloudChanged: iCloud's copy is not the one this device last agreed on.
-    ///   - overwritten: iCloud's copy replaced this device's own last upload without having
-    ///     been made from it: another device uploaded at about the same time.
+    ///   - overwritten: iCloud's copy was not made on top of the copy this device last
+    ///     agreed on: another device uploaded at about the same time, or an older copy was
+    ///     put back.
     public static func action(hasCloud: Bool, everSynced: Bool, localEmpty: Bool,
                               localChanged: Bool, cloudChanged: Bool, overwritten: Bool = false) -> CloudSyncAction {
         guard hasCloud else { return localEmpty ? .none : .offerUpload }

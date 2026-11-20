@@ -76,14 +76,15 @@ final class SavedHostsStore: ObservableObject {
     private func seedHostFromEnvironment() {
         guard let spec = ProcessInfo.processInfo.environment["HERDR_DEBUG_SEED_HOST"] else { return }
         let parts = spec.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
-        guard parts.count == 4,
-              !hosts.contains(where: { $0.host == parts[2] && $0.username == parts[1] }),
-              let key = try? String(contentsOfFile: parts[3], encoding: .utf8) else { return }
-        // `HERDR_DEBUG_SEED_PIN=<fingerprint>` also pins that host key first, as pairing does:
-        // for the iCloud sync test, whose machines are never dialled.
+        guard parts.count == 4 else { return }
+        // `HERDR_DEBUG_SEED_PIN=<fingerprint>` also pins that host key: before the machine is
+        // saved, as pairing does, or for a machine saved earlier, as its first connection
+        // would. For the iCloud sync test, whose machines are never dialled.
         if let pin = ProcessInfo.processInfo.environment["HERDR_DEBUG_SEED_PIN"], let endpoint = HostEndpoint.parse(parts[2]) {
             KeychainHostKeyPolicy.shared.pin(host: endpoint.host, port: endpoint.port, fingerprint: pin)
         }
+        guard !hosts.contains(where: { $0.host == parts[2] && $0.username == parts[1] }),
+              let key = try? String(contentsOfFile: parts[3], encoding: .utf8) else { return }
         add(nickname: parts[0], host: parts[2], username: parts[1], secret: .key(key))
     }
     #endif
@@ -215,36 +216,39 @@ final class SavedHostsStore: ObservableObject {
     }
 
     /// Replaces every saved machine with `machines` (iCloud's copy, see `ICloudSync`), all or
-    /// nothing: every incoming secret is saved first, and if one does not stick the secrets
-    /// already written are put back as they were and the list is left alone. Only then are the
-    /// credentials the new list no longer uses removed.
+    /// nothing. Each machine ends up with exactly the credential given: a nil secret removes
+    /// the one this device had under that id, which may belong to another address or to a host
+    /// key this device does not trust. If a Keychain change does not stick, the ones already
+    /// made are undone and the list is left alone.
     @discardableResult
     func replaceAll(_ machines: [(host: SavedHost, secret: String?)]) -> Bool {
-        var written: [(store: KeychainCredentialStore, account: String, before: String?)] = []
-        for machine in machines {
-            guard let secret = machine.secret else { continue }
-            let id = machine.host.id.uuidString
-            let store = machine.host.auth == .key ? keychain : passwordKeychain
-            written.append((store, id, store.load(account: id)))
-            guard store.save(account: id, secret: secret) else {
-                for step in written {
-                    if let before = step.before {
-                        _ = step.store.save(account: step.account, secret: before)
-                    } else {
-                        _ = step.store.delete(account: step.account)
-                    }
-                }
-                return false
-            }
+        var undo: [(store: KeychainCredentialStore, account: String, before: String?)] = []
+        func set(_ store: KeychainCredentialStore, _ account: String, _ secret: String?) -> Bool {
+            let before = store.load(account: account)
+            if before == secret, secret != nil { return true }
+            undo.append((store, account, before))
+            if let secret { return store.save(account: account, secret: secret) }
+            return store.delete(account: account)
         }
-        for machine in machines {
-            // The credential of the kind this machine no longer uses.
-            _ = (machine.host.auth == .key ? passwordKeychain : keychain).delete(account: machine.host.id.uuidString)
+        var done = true
+        for machine in machines where done {
+            let id = machine.host.id.uuidString
+            let (used, unused) = machine.host.auth == .key ? (keychain, passwordKeychain) : (passwordKeychain, keychain)
+            done = set(used, id, machine.secret) && set(unused, id, nil)
         }
         let keep = Set(machines.map(\.host.id))
-        for old in hosts where !keep.contains(old.id) {
-            _ = keychain.delete(account: old.id.uuidString)
-            _ = passwordKeychain.delete(account: old.id.uuidString)
+        for old in hosts where done && !keep.contains(old.id) {
+            done = set(keychain, old.id.uuidString, nil) && set(passwordKeychain, old.id.uuidString, nil)
+        }
+        guard done else {
+            for step in undo.reversed() {
+                if let before = step.before {
+                    _ = step.store.save(account: step.account, secret: before)
+                } else {
+                    _ = step.store.delete(account: step.account)
+                }
+            }
+            return false
         }
         hosts = machines.map(\.host)
         persist()

@@ -123,15 +123,17 @@ herdr's JSON API exposes both, so panes and agents become real UI objects instea
 - **iCloud sync** — off until you turn it on (the connect screen, or Settings → Machines), per
   device. The machines you pair are then kept in iCloud with their keys and passwords, so
   another of your devices can connect without pairing again. It is one value in iCloud
-  key-value storage: the list in the clear, the keys and passwords sealed (AES-GCM) with a key
-  that exists only in iCloud Keychain, which is end-to-end encrypted. Each machine's verified
-  SSH host key is sealed with its credential, and a device takes the credential only together
-  with it: a machine nobody has connected to yet arrives without its key or password.
+  key-value storage, sealed whole (AES-GCM) with a key that exists only in iCloud Keychain,
+  which is end-to-end encrypted: the machines, their keys and passwords, and the SSH host key
+  verified for each. A device takes a credential only together with the host key it came
+  with: a machine nobody has connected to yet, or one whose host key differs from the one
+  this device trusts, arrives without its key or password.
   While iCloud shows no machines the app offers Upload and sends nothing by itself; a new
   device takes iCloud's machines; after that a change on one device goes to the others. When
-  this device and iCloud both changed since they last agreed, or two uploads crossed, the app
-  asks: upload (this device replaces iCloud) or download (iCloud replaces this device). Host-key pins and the Gram and
-  Feed machine choices are not synced.
+  this device and iCloud both changed since they last agreed, or iCloud's copy was not built
+  on the one this device had (two uploads crossed, an older copy came back), the app asks:
+  upload (this device replaces iCloud) or download (iCloud replaces this device). The Gram
+  and Feed machine choices are not synced.
 - **Guest access** — share one agent with someone outside your machines from its ••• menu. They
   get a one-use invite (QR code or link), watch the live terminal and message the agent through
   a relay, end to end encrypted, with every message labelled `<name> (via HerdrUp):`. Settings →

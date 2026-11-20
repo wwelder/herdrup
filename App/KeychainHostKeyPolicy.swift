@@ -86,16 +86,17 @@ final class KeychainHostKeyPolicy: HostKeyPolicy, @unchecked Sendable {
     }
 
     /// For a host key that reached this device through iCloud (`ICloudSync`): pins it when the
-    /// endpoint has no pin, as a first connection would, and leaves an existing pin alone, so
-    /// sync never replaces a key this device verified itself. If the two differ, the next
-    /// connection hard-stops like any changed key. False only when no pin is in place after.
-    func pinIfAbsent(host: String, port: UInt16, fingerprint: String) -> Bool {
+    /// endpoint has no pin, as a first connection would, and never replaces one, so sync cannot
+    /// change a key this device verified itself. Returns the fingerprint in place afterwards;
+    /// the caller takes the credential only if that is the one it came with. Nil when the
+    /// Keychain could not be read or written.
+    func adopt(host: String, port: UInt16, fingerprint: String) -> String? {
         lock.lock(); defer { lock.unlock() }
         let account = accountKey(host: host, port: port)
         switch lookup(account: account) {
-        case .found: return true
-        case .notFound: return store(account: account, fingerprint: fingerprint)
-        case .error: return false
+        case .found(let existing): return existing
+        case .notFound: return store(account: account, fingerprint: fingerprint) ? fingerprint : nil
+        case .error: return nil
         }
     }
 

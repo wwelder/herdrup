@@ -111,7 +111,8 @@ struct HostEditor: View {
                         if secretMissing {
                             caption("This phone doesn't have the \(authKind == .key ? "key" : "password") "
                                     + "for this host. Keys and passwords stay on the phone they were "
-                                    + "added on, so add it here to connect.", color: Palette.textDim)
+                                    + "added on unless iCloud sync is on, and then arrive only once "
+                                    + "that phone has connected to the host. Add it here to connect.", color: Palette.textDim)
                                 .padding(.bottom, 4)
                         }
                         fieldRow("Nickname", text: $nickname, placeholder: "My Mac")
