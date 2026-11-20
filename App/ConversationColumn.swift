@@ -19,12 +19,13 @@ enum ConversationColumnLayout {
 /// Where a column resizer sits: names its handles for VoiceOver and the UI tests
 /// (`chat-width-handle-left`, `gram-width-readout`).
 enum ConversationSurface: String {
-    case chat, gram
+    case chat, gram, feed
 
     var name: String {
         switch self {
         case .chat: return "Chat"
         case .gram: return "Gram"
+        case .feed: return "Feed"
         }
     }
 
@@ -32,6 +33,7 @@ enum ConversationSurface: String {
         switch self {
         case .chat: return "Drag to resize the chat. Double-tap to reset to Wide."
         case .gram: return "Drag to resize Gram. Double-tap to reset to Wide."
+        case .feed: return "Drag to resize the card. Double-tap to reset to Wide."
         }
     }
 }
