@@ -246,8 +246,8 @@ final class SavedHostsStore: ObservableObject {
     /// Replaces every saved machine with `machines` (iCloud's copy, see `ICloudSync`), all or
     /// nothing, so that a Keychain failure or a shutdown at any point leaves no machine with a
     /// credential that is not its own, and none without the one it had:
-    /// 1. A machine whose credential does not change keeps its Keychain account. Nothing is
-    ///    written for it.
+    /// 1. A machine whose secret is the one this device already holds for it keeps its Keychain
+    ///    account. Nothing is written for it.
     /// 2. Stage. Every other incoming secret is saved under a new account nothing uses. If one
     ///    does not stick, nothing in use has been touched.
     /// 3. Commit. The one write of the list switches those machines to their new accounts. A
@@ -263,7 +263,11 @@ final class SavedHostsStore: ObservableObject {
         var fresh: [(host: SavedHost, secret: String?)] = []
         for machine in machines {
             var host = machine.host
-            if let mine = hosts.first(where: { $0.id == host.id }), mine.auth == host.auth, secret(for: mine) == machine.secret {
+            // Kept only when this device holds the very same secret, byte for byte. A machine
+            // given no secret always moves to a new, empty account: a Keychain read that fails
+            // also reads as "no secret", and must not leave it on an account that holds one.
+            if let incoming = machine.secret, let mine = hosts.first(where: { $0.id == host.id }), mine.auth == host.auth,
+               let held = secret(for: mine), held.utf8.elementsEqual(incoming.utf8) {
                 host.secretAccount = mine.secretAccount
             } else {
                 host.secretAccount = "\(host.id.uuidString).\(UUID().uuidString)"
