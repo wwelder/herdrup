@@ -5579,6 +5579,8 @@ struct TerminalPaneContent: View {
     /// is no list to go back to, so it has no back button or edge swipe, and it does not
     /// offer to close the agent.
     let embedded: Bool
+    /// The page was opened with a `draft` in its reply field (see `init`).
+    private let opensWithDraft: Bool
     @State private var reply: String
     @StateObject private var composerKeyboard = ComposerKeyboard()
     /// Every staged attachment, in paste order. Each sends as its own gram message and
@@ -5753,8 +5755,10 @@ struct TerminalPaneContent: View {
     /// moment the pane reports a composer — never typed raw into the still-booting
     /// pane. A non-empty `initialReply` puts the view into the pending-delivery
     /// state.
+    /// `initialReply` is a task: it is sent by itself as soon as the agent can take a prompt.
+    /// `draft` only starts the reply field off and waits for the owner to finish and send it.
     init(client: HerdrClient, paneID: String, title: String, agent: AgentInfo? = nil,
-         initialReply: String = "", isForeground: Bool = true,
+         initialReply: String = "", draft: String = "", isForeground: Bool = true,
          onNavigate: @escaping (Int) -> Void = { _ in }, onClose: @escaping () -> Void = {},
          embedded: Bool = false) {
         self.embedded = embedded
@@ -5765,7 +5769,8 @@ struct TerminalPaneContent: View {
         self.onNavigate = onNavigate
         self.onClose = onClose
         _agent = State(initialValue: agent)
-        _reply = State(initialValue: initialReply)
+        _reply = State(initialValue: initialReply.isEmpty ? draft : initialReply)
+        opensWithDraft = !draft.isEmpty
         _pendingPrefill = State(initialValue: !initialReply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         _chatModel = StateObject(wrappedValue: ChatModel(target: paneID))
         _showsChat = State(initialValue: ChatPreference.showsChat(paneID: paneID))
@@ -5811,8 +5816,13 @@ struct TerminalPaneContent: View {
     /// streams there and Claude transcribes into its prompt, for Return to send. nil hides
     /// the mic: other agents have no dictation mode to feed (Codex's voice is a spoken
     /// conversation, omp has none), and a federated pane is on another machine.
+    ///
+    /// Also nil on a page opened with a draft: Claude writes the spoken words into its own
+    /// prompt, past the draft in this field, and Send would then submit the draft without
+    /// them. The keyboard's dictation writes into the field, after the draft.
     private var agentVoice: (@MainActor (AsyncStream<Data>) async throws -> Void)? {
-        guard agent?.agent?.lowercased() == "claude", client.canStreamAgentVoice(pane: paneID) else { return nil }
+        guard !opensWithDraft, agent?.agent?.lowercased() == "claude",
+              client.canStreamAgentVoice(pane: paneID) else { return nil }
         let client = client, pane = paneID
         return { audio in try await client.streamAgentVoice(pane: pane, audio: audio) }
     }
@@ -7352,7 +7362,9 @@ struct TerminalPaneContent: View {
         // the app can drive the menu with raw keys (answer a plan-approval / AskUserQuestion).
         // Only hold the prior intent agent for a true composer blip (composer nil, not blocked).
         if priorWasIntent && liveLostComposer && !live.isAwaitingMenuInput { return }
-        agent = live
+        // The list names no session; the pane keeps the one it was opened with, so what is
+        // withheld from another session's agent (`fromOtherSession`) stays withheld.
+        agent = agent?.session.map(live.inSession) ?? live
     }
 
     /// One prompt-only delivery attempt for a pending pre-fill. The tested

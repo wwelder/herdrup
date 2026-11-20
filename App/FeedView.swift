@@ -723,6 +723,8 @@ private struct FeedActionButtons: View {
     let sending: Bool
     let onChoose: (FeedAction) -> Void
     var onReply: (() -> Void)?
+    /// Opens the agent to ask about the card (the reader, when there is one to ask).
+    var onAsk: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 8) {
@@ -735,6 +737,19 @@ private struct FeedActionButtons: View {
             }
             Spacer(minLength: 0)
             if sending { ProgressView().controlSize(.small).tint(Palette.textDim) }
+            if let onAsk {
+                Button(action: onAsk) {
+                    Label("Ask agent", systemImage: "bubble.left.and.text.bubble.right")
+                        .font(Typography.app(15, .semibold))
+                        .lineLimit(1)
+                        .foregroundStyle(Palette.brand)
+                        .padding(.horizontal, 12)
+                        .frame(minHeight: 36)
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.borderless)
+                .accessibilityIdentifier("feed-ask-agent")
+            }
         }
         .disabled(sending)
     }
@@ -830,6 +845,8 @@ struct FeedReaderView: View {
     @FocusState private var typing: Bool
     /// The reading size the owner set for Chat applies to a card too.
     @AppStorage(ChatTextSize.storageKey) private var fontSize = ChatTextSize.defaultPoints
+    /// The agent whose page is open over the card, to ask about it.
+    @State private var asking: FeedAskTarget?
 
     init(entryID: String) {
         _entryID = State(initialValue: entryID)
@@ -886,6 +903,9 @@ struct FeedReaderView: View {
             }
         }
         .modifier(FeedAnswerPrompts(shown: true))
+        // On the page, not on the Feed's stack: in the split layout what is attached to the
+        // stack does not present while a card is pushed.
+        .fullScreenCover(item: $asking) { FeedAgentPage(target: $0) }
         .onAppear { if let entry { store.setRead([entry], true) } }
         .onChange(of: store.answered) { _, answered in
             guard let answered, answered.id == entry?.id else { return }
@@ -952,6 +972,12 @@ struct FeedReaderView: View {
         let note = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let sending = store.sending.contains(entry.id)
         let placeholder = entry.input.flatMap { $0.isEmpty ? nil : $0 } ?? "Reply"
+        let ask: (() -> Void)? = FeedAskTarget(entry).map { target in
+            return {
+                typing = false
+                asking = target
+            }
+        }
         return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .bottom, spacing: 8) {
                 TextField(placeholder, text: $text, axis: .vertical)
@@ -977,11 +1003,12 @@ struct FeedReaderView: View {
                 .disabled(note.isEmpty || sending)
                 .accessibilityLabel("Send")
             }
-            if !entry.actions.isEmpty {
-                FeedActionButtons(entry: entry, sending: sending) { action in
+            // The row also shows for a card with no buttons when there is an agent to ask.
+            if !entry.actions.isEmpty || ask != nil {
+                FeedActionButtons(entry: entry, sending: sending, onChoose: { action in
                     typing = false
                     store.choose(entry, action, text: note.isEmpty ? nil : note)
-                }
+                }, onAsk: ask)
             } else if sending {
                 ProgressView().controlSize(.small).tint(Palette.textDim)
             }
@@ -1003,6 +1030,114 @@ struct FeedReaderView: View {
         entryID = next.id
         text = ""
         store.setRead([next], true)
+    }
+}
+
+/// Who a question about a card goes to: the agent that asked it, or, for a card no agent asked
+/// (a script's, the fleet's), the orchestrator Gram talks to.
+struct FeedAskTarget: Identifiable, Equatable {
+    /// `SavedHost.id.uuidString`.
+    let machine: String
+    /// The agent's herdr session; nil for the machine's default one.
+    let session: String?
+    /// The asking agent's pane. Nil for the orchestrator, which is found by `name`.
+    let paneID: String?
+    /// The agent's herdr name. herdr names an agent that has none by its pane id.
+    let name: String
+    /// What the reply starts with: names the card for an agent that did not ask it.
+    let about: String
+
+    var id: String { [machine, session ?? "", paneID ?? "", name].joined(separator: "|") }
+
+    init?(_ entry: FeedEntry) {
+        if let asker = entry.asker, let machine = entry.machine {
+            self.machine = machine
+            session = asker.session == "default" ? nil : asker.session
+            paneID = asker.paneID
+            name = asker.agent.isEmpty ? asker.paneID : asker.agent
+            about = ""
+        } else {
+            let defaults = UserDefaults.standard
+            guard let machine = defaults.string(forKey: OrchestratorPreference.machineKey), !machine.isEmpty else {
+                return nil
+            }
+            self.machine = machine
+            session = nil
+            paneID = nil
+            name = defaults.string(forKey: OrchestratorPreference.agentKey) ?? OrchestratorPreference.defaultAgent
+            // The file's name: for a fleet card that is the run the orchestrator tracks.
+            about = "About \(entry.legacyID): "
+        }
+    }
+}
+
+/// An agent's own chat page, opened over a card: the owner asks about the card, reads the
+/// answer, and goes back to the card to decide. For Claude Code the reply starts as `/btw `,
+/// its side question: it is answered without becoming part of the agent's task, so the agent
+/// goes on waiting for the card's answer. Nothing is sent until the owner sends it.
+private struct FeedAgentPage: View {
+    let target: FeedAskTarget
+    @Environment(\.dismiss) private var dismiss
+    @State private var client: HerdrClient?
+    @State private var found: AgentInfo?
+    @State private var problem: String?
+
+    var body: some View {
+        ZStack {
+            Palette.groundMachine.ignoresSafeArea()
+            if let client, let found {
+                TerminalPaneContent(client: client, paneID: found.paneID, title: found.displayName, agent: found,
+                                    draft: (found.agent == "claude" ? "/btw " : "") + target.about,
+                                    onClose: { dismiss() })
+            } else {
+                VStack(spacing: 12) {
+                    if let problem {
+                        Text(verbatim: problem)
+                            .font(Typography.app(15))
+                            .foregroundStyle(Palette.textDim)
+                            .multilineTextAlignment(.center)
+                    } else {
+                        ProgressView().tint(Palette.textDim)
+                        Text(verbatim: "Looking for \(target.name)")
+                            .font(Typography.app(15))
+                            .foregroundStyle(Palette.textDim)
+                    }
+                    Button("Back to the card") { dismiss() }
+                        .font(Typography.app(15, .semibold))
+                        .padding(.top, 6)
+                }
+                .padding(24)
+            }
+        }
+        .task { await look() }
+    }
+
+    private func look() async {
+        guard let machine = FleetClients.shared.client(forMachine: target.machine),
+              let client = target.session == nil ? machine : machine.forSession(target.session) else {
+            problem = "This device has no connection to the machine \(target.name) runs on."
+            return
+        }
+        do {
+            let agents = try await client.agentList()
+            let match = agents.first { agent in
+                guard let pane = target.paneID else { return agent.name == target.name }
+                // The pane, and still the agent that asked: another may have started in
+                // it since. An agent without a name can only be told by its pane.
+                return agent.paneID == pane && (target.name == pane || agent.name == target.name)
+            }
+            guard let agent = match else {
+                problem = "\(target.name) is no longer running there."
+                return
+            }
+            self.client = client
+            // Marked as another session's, as the All view marks one: the avatar and the
+            // push mute are kept by the machine and session open in Agents, under a pane id
+            // that may be somebody else's there, so they are not offered on this page.
+            found = agent.inSession(target.session ?? "default")
+        } catch {
+            problem = error.localizedDescription
+        }
     }
 }
 

@@ -44,6 +44,25 @@ final class FeedTests: XCTestCase {
         XCTAssertNil(card.replySummary)
     }
 
+    func testACardAnAgentAskedNamesTheAgent() throws {
+        let asked = try FeedCards.entry(FeedCardFile(
+            source: "agents", id: "ask-1",
+            card: #"{"title":"Ship it?","input":"","asker":{"session":"work","pane_id":"w1:p2","agent":"jarvis"}}"#))
+        XCTAssertEqual(asked.asker, FeedAsker(session: "work", paneID: "w1:p2", agent: "jarvis"))
+        // It survives being saved with a starred card.
+        let saved = try JSONDecoder().decode(FeedEntry.self, from: JSONEncoder().encode(asked))
+        XCTAssertEqual(saved.asker, asked.asker)
+        // A pane herdr had no name for.
+        let unnamed = try FeedCards.entry(FeedCardFile(
+            source: "agents", id: "ask-2", card: #"{"title":"t","asker":{"session":"default","pane_id":"w1:p9"}}"#))
+        XCTAssertEqual(unnamed.asker?.agent, "")
+        // A script's card has no asker, and an odd one does not cost the card.
+        XCTAssertNil(try FeedCards.entry(FeedCardFile(source: "fleet", id: "q", card: #"{"title":"t"}"#)).asker)
+        let odd = try FeedCards.entry(FeedCardFile(source: "agents", id: "x", card: #"{"title":"t","asker":"jarvis"}"#))
+        XCTAssertEqual(odd.title, "t")
+        XCTAssertNil(odd.asker)
+    }
+
     func testACardFromOneOfSeveralMachinesIsNamedByItsMachine() throws {
         let file = FeedCardFile(source: "agents", id: "ask-1", card: #"{"title":"Ship it?"}"#)
         let a = try FeedCards.entry(file, machine: "A")
