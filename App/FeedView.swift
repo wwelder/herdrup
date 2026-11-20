@@ -1087,8 +1087,15 @@ private struct FeedAgentPage: View {
             Palette.groundMachine.ignoresSafeArea()
             if let client, let found {
                 TerminalPaneContent(client: client, paneID: found.paneID, title: found.displayName, agent: found,
-                                    draft: (found.agent == "claude" ? "/btw " : "") + target.about,
-                                    onClose: { dismiss() })
+                                    draft: (found.agent == "claude" ? ClaudeSideAnswer.command : "") + target.about,
+                                    onClose: {
+                                        // An answer left open would take the agent's next message.
+                                        // ponytail: not closed when the app is quit on this page.
+                                        if found.agent == "claude" {
+                                            Task { await client.closeClaudeSideAnswer(pane: found.paneID) }
+                                        }
+                                        dismiss()
+                                    })
             } else {
                 VStack(spacing: 12) {
                     if let problem {
